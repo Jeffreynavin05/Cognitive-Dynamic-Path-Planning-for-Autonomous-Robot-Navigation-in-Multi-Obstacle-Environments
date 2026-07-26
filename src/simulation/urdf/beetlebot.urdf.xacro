@@ -3,7 +3,7 @@
 
   <!-- Dimensions sourced from BeetleBot hardware docs (docs.veerobot.com/ros-robots/beetle-bot,
        checked 2026-07-26). Wheel/sensor mount placements below are reasonable placements
-       within the documented chassis footprint, not exact factory coordinates -- swap in the
+       within the documented chassis footprint, not exact factory coordinates; swap in the
        official URDF if/when one becomes available. -->
 
   <xacro:property name="chassis_length" value="0.375"/>
