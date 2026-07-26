@@ -1,0 +1,42 @@
+simulation_manager:
+  ros__parameters:
+    world_name: "multi_obstacle_arena"
+
+    # Arena free-space bounds for random sampling (inset from the outer walls).
+    # Must stay inside the walls defined in worlds/multi_obstacle_arena.sdf.
+    arena_x_min: -6.5
+    arena_x_max: 6.5
+    arena_y_min: -4.5
+    arena_y_max: 4.5
+
+    # Keep-out band for the single corridor divider (see world SDF comment).
+    # A point is "inside a wall" if corridor_band_y_min <= y <= corridor_band_y_max
+    # AND |x| >= corridor_half_width.
+    corridor_band_y_min: 1.5
+    corridor_band_y_max: 2.5
+    corridor_half_width: 1.0
+
+    # Fixed robot start pose (south room). Used both to spawn the robot (world.launch.py
+    # reads this same file) and as a keep-out circle so obstacles don't spawn on top of it.
+    robot_spawn_x: -5.0
+    robot_spawn_y: -3.5
+    robot_spawn_yaw: 1.5708
+    robot_keepout_radius: 1.2
+
+    num_static_obstacles: 4
+    static_obstacle_min_size: 0.3
+    static_obstacle_max_size: 0.6
+
+    # Project spec calls for 5-10 moving obstacles.
+    num_dynamic_obstacles: 6
+    dynamic_obstacle_radius: 0.2
+    min_obstacle_speed: 0.15
+    max_obstacle_speed: 0.5
+    waypoint_arrival_radius: 0.3
+
+    min_entity_separation: 1.0
+    control_rate_hz: 10.0
+
+    # 0 = seed from system time (different every run, per spec). Set to a fixed
+    # non-zero integer for a reproducible run while debugging.
+    random_seed: 0

@@ -25,7 +25,7 @@ LSTM) without touching any other node.
 | Package | Status | Responsibility |
 |---|---|---|
 | `interfaces` | done | Shared message definitions |
-| `simulation` | planned | Gazebo Harmonic world, URDF, randomized moving-obstacle spawner |
+| `simulation` | done | Gazebo Harmonic world, URDF, randomized moving-obstacle spawner |
 | `cognitive_perception` | planned | camera_node, lidar_node, perception_node |
 | `cognitive_tracking` | planned | Multi-object tracking with persistent IDs |
 | `motion_prediction` | planned | Future trajectory forecasting |
