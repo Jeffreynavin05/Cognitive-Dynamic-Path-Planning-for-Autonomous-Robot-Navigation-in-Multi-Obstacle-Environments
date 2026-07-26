@@ -25,6 +25,7 @@ section here in the same change.
 9b. [Module 6 implementation details (risk_assessment)](#9b-module-6-implementation-details-risk_assessment)
 9c. [Module 7 implementation details (dynamic_planner)](#9c-module-7-implementation-details-dynamic_planner)
 9d. [Module 8 implementation details (robot_controller)](#9d-module-8-implementation-details-robot_controller)
+9e. [Module 9 implementation details (cognitive_bringup)](#9e-module-9-implementation-details-cognitive_bringup)
 10. [Design philosophy](#10-design-philosophy)
 11. [Coding conventions](#11-coding-conventions)
 12. [Testing conventions](#12-testing-conventions)
@@ -108,7 +109,7 @@ package's source, `build/`, `install/`, and `log/` are generated artifacts
 | `risk_assessment` | ament_python | done (Module 6) | `risk_node` — per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) against the robot's own odometry-projected path, publishing `ObstacleRiskArray` |
 | `dynamic_planner` | ament_python | done (Module 7) | `planner_node` — self-hosted `NavigateToPose` action server; deterministic, risk-aware local planner (no real Nav2 bringup/costmap plugin), publishing velocity commands on `/cmd_vel_nav` |
 | `robot_controller` | ament_python | done (Module 8) | `controller_node` — relays `/cmd_vel_nav` onto a deployment-selected output topic (`/cmd_vel` sim / `/cmd_vel_gate` hardware), with a command-staleness watchdog safety stop |
-| `cognitive_bringup` | ament_python (planned) | planned (integration, unnumbered) | Top-level launch files, RViz configs, world files, `visualization_node` |
+| `cognitive_bringup` | ament_python | done (integration, unnumbered) | Top-level launch files (`bringup_sim`/`bringup_hardware`/`pipeline`), RViz config, `visualization_node` |
 
 No pipeline-stage package (`cognitive_perception`, `cognitive_tracking`, and
 onward) lists another pipeline-stage package as a build dependency in its
@@ -128,7 +129,7 @@ else it consumes from an upstream stage is a runtime-only topic subscription.
 | `risk_assessment` | done (Module 6) | `test_risk_model.py` (17), `test_risk_node.py` (8) — 25 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 76 tests workspace-wide, 0 failures); additionally smoke-tested live — `risk_node` run standalone, fed a fabricated `Odometry` and `PredictedTrajectoryArray` via `ros2 topic pub`, `/risk/obstacle_risks` echoed and confirmed correct `distance_to_robot`, `relative_speed`, `time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct collision-course obstacle |
 | `dynamic_planner` | done (Module 7) | `test_global_path.py` (5), `test_local_planner.py` (18), `test_planner_node.py` (13) — 36 tests total | Built with `colcon build` (all 7 workspace packages); unit suite green (`colcon test-result`: 117 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); additionally smoke-tested live in three scenarios — `planner_node` run standalone, fed a fabricated `Odometry` via `ros2 topic pub` and a goal via `ros2 action send_goal`: (1) far, obstacle-free goal — `/planner/global_path` published once (correct start/end waypoints) and `/cmd_vel_nav` published the expected dynamic-window-limited forward command (`linear.x=0.05`, matching hand-derived expectations) at 10 Hz; (2) a `THREAT_CRITICAL` risk with `time_to_collision=0.1` forced `/cmd_vel_nav` to all-zero throughout, despite a far, otherwise-clear goal; (3) a goal already within `goal_tolerance_m` made the action report `SUCCEEDED` immediately |
 | `robot_controller` | done (Module 8) | `test_controller_node.py` (8 tests) | Built with `colcon build` (all 8 workspace packages); unit suite green (`colcon test-result`: 125 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); additionally smoke-tested live in three scenarios — `controller_node` run standalone, fed fabricated `Twist` messages via `ros2 topic pub`: (1) relay correctness — each `/cmd_vel_nav` message reappeared immediately on `/cmd_vel`; (2) watchdog — real silence exceeding `cmd_timeout_sec` (including the natural startup latency between separate `ros2 topic pub` invocations) reliably produced a zero `Twist` on `/cmd_vel`, with relay resuming correctly on the next fresh command; (3) `output_topic:=/cmd_vel_gate` override confirmed via `ros2 node info` to redirect the publisher, proving the Phase-2 deployment path |
-| `cognitive_bringup` | planned | — | Not started |
+| `cognitive_bringup` | done (Module 9, unnumbered) | `test_visualization_node.py` (10 tests) | Built with `colcon build` (all 9 workspace packages); unit suite green (`colcon test-result`: 135 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); `ros2 launch cognitive_bringup {pipeline,bringup_sim,bringup_hardware}.launch.py --show-args` confirmed all three launch files construct correctly and expose the expected arguments. Full live Gazebo run (`bringup_sim.launch.py` end-to-end with a sent goal, confirming RViz renders the robot model, `/scan`, and all three marker topics in a single `world`-fixed-frame view) is documented as the package's manual verification step for the user to run interactively — see `src/cognitive_bringup/README.md`. |
 
 ## 5. Complete topic graph
 
@@ -166,11 +167,11 @@ pipeline-contract topic, since there is no real planned-path topic to consume un
 | Topic | Type | Publisher | Subscriber(s) |
 |---|---|---|---|
 | `/perception/detections` | `interfaces/DetectedObjectArray` | `perception_node` | `tracking_node` |
-| `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` (planned) |
-| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `planner_node`, `visualization_node` (planned) |
-| `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `planner_node`, `visualization_node` (planned) |
+| `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` |
+| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `planner_node`, `visualization_node` |
+| `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `planner_node`, `visualization_node` |
 | `/cmd_vel_nav` | `geometry_msgs/Twist` | `planner_node` | `controller_node` |
-| *(proposed, additive, not an `interfaces` message)* `/planner/global_path` | `nav_msgs/Path` | `planner_node` | `visualization_node` (planned) |
+| *(additive, not an `interfaces` message)* `/planner/global_path` | `nav_msgs/Path` | `planner_node` | RViz (`Path` display) |
 
 Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly, not a custom
 action — `planner_node` hosts this action server itself (`navigate_to_pose`),
@@ -196,6 +197,22 @@ deployment-selected `output_topic` parameter, `/cmd_vel` by default (Phase 1 —
 raw diff-drive input, table A) or `/cmd_vel_gate` for Phase 2 (the real BeetleBot's
 existing arbitration node, not built by this project). No other node ever needs to
 know which one is active.
+
+### F. Visualization-only topics (`cognitive_bringup`, Module 9)
+
+Published by `visualization_node`, consumed only by RViz — not part of the control
+path, not `interfaces` messages, and not subscribed to by any pipeline-stage node:
+
+| Topic | Type | Published by |
+|---|---|---|
+| `/visualization/tracks_markers` | `visualization_msgs/MarkerArray` | `visualization_node`, from `/tracking/tracks` |
+| `/visualization/trajectories_markers` | `visualization_msgs/MarkerArray` | `visualization_node`, from `/prediction/trajectories` |
+| `/visualization/risk_markers` | `visualization_msgs/MarkerArray` | `visualization_node`, from `/risk/obstacle_risks`, positioned via a `track_id` join against the latest cached trajectory (see §9e) |
+
+`cognitive_bringup`'s `bringup_sim.launch.py` also publishes a fixed `world`→`odom`
+static transform (see §9e) — the one non-pipeline TF this workspace publishes, needed
+only so RViz can render pipeline messages (all headered `"world"`) and the robot's own
+`odom`-rooted TF tree in the same view.
 
 ## 6. Message flow
 
@@ -287,9 +304,12 @@ controller_node  — the one node allowed to be environment-aware (§9d):
         ▼
 /cmd_vel (Phase 1) or /cmd_vel_gate (Phase 2)  (geometry_msgs/Twist)
 
-(planned) visualization_node subscribes to TrackedObjectArray,
-          PredictedTrajectoryArray, and ObstacleRiskArray independently, for
-          RViz display — it is not in the control path.
+visualization_node (cognitive_bringup, Module 9) — independently subscribes to
+          TrackedObjectArray, PredictedTrajectoryArray, and ObstacleRiskArray
+          (three separate callbacks, no joining except each risk marker's
+          position lookup, see §9e), publishing one MarkerArray per stage on
+          /visualization/{tracks,trajectories,risk}_markers for RViz. Not in
+          the control path — no pipeline node subscribes to any of its output.
 ```
 
 ## 7. Interfaces overview
@@ -836,6 +856,93 @@ fabricated `Twist` messages over `ros2 topic pub`:
 3. **`output_topic:=/cmd_vel_gate` override** — confirmed via `ros2 node info /controller_node`
    to redirect the publisher, proving the Phase-2 deployment path without any code change.
 
+## 9e. Module 9 implementation details (`cognitive_bringup`)
+
+The unnumbered integration package (§3/§15): one-command startup of the full Phase-1
+pipeline, RViz configuration, and a debugging `visualization_node`. Introduces no new
+algorithms and makes no changes to any of the eight numbered pipeline packages.
+
+**Node:** `visualization_node`. Independently subscribes to `/tracking/tracks`,
+`/prediction/trajectories`, and `/risk/obstacle_risks` — three separate callbacks, not
+joined into one combined view, mirroring this node's own already-documented
+"independent multi-topic subscription" pattern (§6/§9c/§15). Publishes one
+`visualization_msgs/MarkerArray` per stage (§5F) so each can be toggled independently
+in RViz's Displays panel. Not part of the control path — no pipeline node subscribes
+to any of its output.
+
+**Staged design** — one input/assemble/output triple per subscribed topic, mirroring
+every prior module's convention:
+
+| Stage | Method | Job |
+|---|---|---|
+| Input | `_tracks_callback` | Entry point for `/tracking/tracks`; builds and publishes track markers |
+| Input | `_trajectories_callback` | Entry point for `/prediction/trajectories`; caches the latest `PredictedTrajectory` per `track_id` (the position source for risk markers, see below), then builds and publishes trajectory markers |
+| Input | `_risks_callback` | Entry point for `/risk/obstacle_risks`; builds and publishes risk markers, positioned via the cached trajectory of the matching `track_id` |
+| Assemble | `_build_track_markers` / `_build_trajectory_markers` / `_build_risk_markers` | Pure message-building, no I/O — directly unit-testable |
+| Output | `_publish_tracks` / `_publish_trajectories` / `_publish_risks` | The only methods that touch their respective publisher |
+
+**Launch files:**
+
+| File | Role |
+|---|---|
+| `bringup_sim.launch.py` | Phase-1 entry point. Includes `simulation/launch/world.launch.py`, publishes the `world`→`odom` static transform (below), then includes `pipeline.launch.py` with `use_sim_time:=true`, `output_topic:=/cmd_vel`. |
+| `bringup_hardware.launch.py` | Phase-2 entry point (documented stub). Includes only `pipeline.launch.py`, with `use_sim_time:=false`, `output_topic:=/cmd_vel_gate`. No BeetleBot sensor-driver bringup — that is existing platform infrastructure this project assumes exists but does not build (same assumption already documented for `/cmd_vel_gate` itself, §9d/§17). |
+| `pipeline.launch.py` | Shared by both of the above via `IncludeLaunchDescription`. Includes every stage launch file (`perception` through `controller`), plus `visualization_node` and (behind a `use_rviz` toggle, default `true`) `rviz2` loaded with `rviz/bringup.rviz`. Never included by a user directly. |
+
+**Key implementation facts:**
+
+- **Two separate top-level launch files, not one file with a `sim:=true/false` branch.**
+  `bringup_sim.launch.py` and `bringup_hardware.launch.py` share `pipeline.launch.py`
+  but are otherwise textually independent, so a launch-time argument mistake can't
+  accidentally start Gazebo on the real BeetleBot or vice versa. Approved design
+  decision, made before implementation.
+- **The `world`→`odom` static transform closes a real, pre-existing TF gap.** Every
+  pipeline message's `header.frame_id` is the hardcoded constant `"world"`
+  (`perception_node`'s `detection_frame_id`, §8), but no node anywhere in this
+  workspace ever publishes a TF frame actually named `"world"` — the only TF chain
+  that exists is `odom → base_footprint → ...`, from the diff-drive plugin bridged in
+  `simulation/launch/world.launch.py`. Without a link between the two, RViz has two
+  disconnected trees and cannot render the robot model and any pipeline
+  marker/path together. `bringup_sim.launch.py` publishes that one missing link via
+  `tf2_ros static_transform_publisher` — a fixed `world`→`odom` transform equal to the
+  robot's spawn pose, read directly from `simulation/config/simulation_params.yaml` at
+  launch time (not hand-duplicated: the same "read the canonical file" pattern
+  `world.launch.py` itself already uses for `robot_spawn_x`/`_y`/`_yaw`). Exact at
+  `t=0` by construction; only as accurate afterward as the diff-drive plugin's own
+  odometry integration — the same category of Phase-1 approximation already
+  documented for `risk_node`'s self-projected path (§9b/§14/§17). Visualization-only:
+  no pipeline node subscribes to or depends on this transform, and it required no
+  change to any existing package. Approved design decision, made before
+  implementation.
+- **Three marker topics, not one combined `MarkerArray`.** Lets each pipeline stage be
+  toggled on/off independently in RViz's Displays panel. Approved design decision.
+- **Risk markers are positioned via a `track_id` join, not a position field on
+  `ObstacleRisk`.** `interfaces/msg/ObstacleRisk.msg` carries no position of its own
+  (its own header comment: "not a raw sensor measurement"), so `visualization_node`
+  caches the latest `PredictedTrajectory` per `track_id` and reads a risk marker's
+  position from that trajectory's first point — the same by-`track_id` join
+  `dynamic_planner`'s `planner_node._join_obstacles` already uses to combine geometry
+  with risk priority (§9c/§16), extended to a second consumer without any
+  `interfaces` message change. A risk with no matching cached trajectory that cycle is
+  silently skipped, precedented by `_join_obstacles` doing the same (§14).
+- **No modifications to any numbered pipeline package.** Nothing in `cognitive_bringup`
+  required a bug fix elsewhere; every existing package's launch file, topic name, and
+  message contract is used exactly as documented.
+- **The only package in this workspace allowed to depend on every other package.**
+  §3's "no pipeline-stage package depends on another" rule does not apply to the
+  integration package itself, whose entire purpose is the opposite — bringing all
+  eight numbered packages up together.
+
+**Testing:** 10 pytest tests in `test_visualization_node.py`, all built on fabricated
+`TrackedObjectArray`/`PredictedTrajectoryArray`/`ObstacleRiskArray` inputs — no Gazebo,
+no live ROS graph, no other pipeline package. Additionally verified: `ros2 launch
+cognitive_bringup {pipeline,bringup_sim,bringup_hardware}.launch.py --show-args`
+confirmed all three launch files construct without error and expose the expected
+launch arguments (`use_sim_time`, `output_topic`, `use_rviz`). A full live Gazebo run
+(sending a goal and confirming RViz renders the robot model, `/scan`, and all three
+marker topics together) is documented as this package's manual verification step in
+`src/cognitive_bringup/README.md`.
+
 ## 10. Design philosophy
 
 - **Contract-first decoupling.** The `interfaces` package is the only shared
@@ -1051,17 +1158,29 @@ fabricated `Twist` messages over `ros2 topic pub`:
   `cognitive_perception/cognitive_perception/perception_node.py`'s comments.
   This is the first canonical version; any prior informal notes it may have
   superseded are not preserved here.
+- `cognitive_bringup`'s `world`→`odom` static transform (§9e) is a fixed offset set
+  once at launch from the robot's spawn pose — it does not track the diff-drive
+  plugin's own odometry drift, so a "world"-framed marker and the robot model will
+  visibly diverge in RViz over a long-enough run, the same category of approximation
+  §17 already documents for `risk_node`'s self-projected path. Visualization-only; no
+  pipeline node reads this transform.
+- `cognitive_bringup`'s `bringup_hardware.launch.py` is a documented stub, not a
+  complete real-robot bringup — it does not launch the BeetleBot's own sensor drivers
+  or `/cmd_vel_gate` arbitration node, which are assumed to exist as separate
+  BeetleBot-platform infrastructure (§9e/§17).
 
 ## 15. Planned integration work
 
-All eight numbered modules (`cognitive_perception` through `robot_controller`) are
-complete — see §8, §9, §9a, §9b, §9c, §9d for implementation details. The full Phase-1
-pipeline runs end-to-end, perception through actuation.
+All eight numbered modules (`cognitive_perception` through `robot_controller`) plus the
+unnumbered integration package (`cognitive_bringup`) are complete — see §8, §9, §9a,
+§9b, §9c, §9d, §9e for implementation details. The full Phase-1 pipeline runs
+end-to-end, perception through actuation, and is startable with a single command
+(`ros2 launch cognitive_bringup bringup_sim.launch.py`).
 
-**Unnumbered integration package — `cognitive_bringup`.** Top-level launch
-files, RViz configs, world files, and `visualization_node` (subscribes to
+`visualization_node` (`cognitive_bringup`, Module 9) subscribes to
 `TrackedObjectArray`, `PredictedTrajectoryArray`, and `ObstacleRiskArray`
-independently, for display — not part of the control path).
+independently, for RViz display — not part of the control path. See §9e for its full
+implementation detail; nothing further is planned or outstanding for this package.
 
 ## 16. Important architectural decisions made during implementation
 
@@ -1225,6 +1344,29 @@ independently, for display — not part of the control path).
 - `controller_node` uses plain `rclpy.spin()`, not the `MultiThreadedExecutor`
   `planner_node` needs — its subscription callback and watchdog timer are
   both non-blocking, so §11's executor exception does not apply here.
+- `cognitive_bringup` publishes a fixed `world`→`odom` static transform rather than
+  leaving RViz with two disconnected TF trees — approved because every pipeline
+  message's `header.frame_id` is the hardcoded constant `"world"` (§8) while no node
+  anywhere in this workspace ever publishes a TF frame by that name; the transform is
+  read from `simulation`'s own spawn-pose config at launch time rather than
+  hand-duplicated, and is visualization-only (§9e).
+- `bringup_sim.launch.py` and `bringup_hardware.launch.py` are two separate top-level
+  launch files sharing a common `pipeline.launch.py`, rather than one file branching
+  on a `sim:=true/false` argument — approved so a launch-time argument mistake can
+  never cross-wire the two environments (§9e).
+- `visualization_node` publishes three independent `MarkerArray` topics (tracks,
+  trajectories, risks) rather than one combined array, so each pipeline stage can be
+  toggled independently in RViz's Displays panel (§9e).
+- `visualization_node` positions each risk marker via a `track_id` join against its
+  own cached `PredictedTrajectory`, rather than adding a position field to
+  `ObstacleRisk.msg` — keeps the frozen `interfaces` contract unchanged (no message
+  has been modified since Module 1), precedented by `planner_node`'s own
+  `_join_obstacles` doing the same join for the same reason (§9c/§9e).
+- `cognitive_bringup` is the one package in this workspace allowed to depend on every
+  other package (`simulation` plus all eight numbered pipeline packages) — §3's
+  "no pipeline-stage package depends on another" rule doesn't apply to the
+  integration package itself, whose entire purpose is bringing all of them up
+  together (§9e).
 
 ## 17. Assumptions and rationale behind each design choice
 
@@ -1352,3 +1494,23 @@ independently, for display — not part of the control path).
   exist yet or behaves differently than documented here, that is
   BeetleBot-platform work outside this pipeline's packages, not a
   `robot_controller` change.
+- **Assumes the diff-drive plugin's odometry integration stays close enough to the
+  robot's true world-frame pose that a one-shot `world`→`odom` static transform,
+  fixed at the robot's spawn pose, remains visually useful for the length of a demo
+  run.** `cognitive_bringup`'s `bringup_sim.launch.py` does not update this transform
+  as the robot moves — it is a visualization convenience, not a localization claim,
+  and no pipeline node reads it. Revisit (e.g. republish from real localization) if a
+  future phase needs the transform to stay accurate over long runs (§9e/§14).
+- **Assumes RViz/`visualization_node` are a debugging aid, never a correctness
+  dependency.** Every numbered pipeline package was built, tested, and verified before
+  `cognitive_bringup` existed; nothing in `perception_node` through `controller_node`
+  subscribes to any topic this package publishes. If a future change made any pipeline
+  node depend on `cognitive_bringup`, that would invalidate this assumption and the
+  "integration package has no downstream dependents" property §9e relies on.
+- **Assumes the BeetleBot's own sensor-driver bringup (RPLidar C1, Pi Camera V1.3,
+  LSM6DSRTR IMU, wheel odometry) and the `/cmd_vel_gate` arbitration node will already
+  be running before `bringup_hardware.launch.py` is used.** This file is a documented
+  stub proving the pipeline-side launch argument seam works for Phase 2 without a code
+  change (§9e) — it is not, by itself, a complete real-robot bringup. Phase 2
+  deployment should confirm what that platform-level bringup actually looks like on
+  the real BeetleBot before relying on this file alone.

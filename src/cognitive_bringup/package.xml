@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cognitive_bringup</name>
+  <version>0.1.0</version>
+  <description>Integration package: one-command startup of the full Phase-1 pipeline (Gazebo through actuation), RViz configuration, and visualization_node for debugging. Introduces no new algorithms -- brings up the already-complete pipeline built by every numbered module.</description>
+  <maintainer email="jeffreynavin05@gmail.com">Jeffrey Navin</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>interfaces</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- Runtime-only: this package's whole job is to launch every other package.
+       No numbered pipeline-stage package is ever allowed to depend on another
+       (PROJECT_CONTEXT.md section 3); that rule doesn't apply to the
+       integration package itself, whose purpose is the opposite. -->
+  <exec_depend>simulation</exec_depend>
+  <exec_depend>cognitive_perception</exec_depend>
+  <exec_depend>cognitive_tracking</exec_depend>
+  <exec_depend>motion_prediction</exec_depend>
+  <exec_depend>risk_assessment</exec_depend>
+  <exec_depend>dynamic_planner</exec_depend>
+  <exec_depend>robot_controller</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

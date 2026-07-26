@@ -32,11 +32,20 @@ LSTM) without touching any other node.
 | `risk_assessment` | done | Per-obstacle collision risk scoring (TTC, path intersection, etc.) |
 | `dynamic_planner` | done | Self-hosted `NavigateToPose` action server; deterministic, risk-aware local planner |
 | `robot_controller` | done | Relays `/cmd_vel_nav` onto `/cmd_vel` (sim) / `/cmd_vel_gate` (hardware), with a command-staleness watchdog |
-| `cognitive_bringup` | planned | Launch files, RViz configs, world files, visualization_node |
+| `cognitive_bringup` | done | One-command launch files, RViz config, visualization_node |
 
 The full Phase-1 pipeline (`perception_node` through `controller_node`) is complete and runs
 end-to-end. See `PROJECT_CONTEXT.md` for full architectural detail, per-module implementation
 notes, and the design decisions behind each stage.
+
+## Quick start (Phase 1, Gazebo)
+
+```bash
+ros2 launch cognitive_bringup bringup_sim.launch.py
+```
+
+Starts Gazebo, spawns the robot and every obstacle, and launches the full pipeline plus
+RViz. See `src/cognitive_bringup/README.md` for sending a goal and the Phase-2 launch stub.
 
 ## Target platform
 

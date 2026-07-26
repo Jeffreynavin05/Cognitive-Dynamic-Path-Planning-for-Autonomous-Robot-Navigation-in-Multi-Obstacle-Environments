@@ -1,0 +1,30 @@
+visualization_node:
+  ros__parameters:
+    # Floor applied to TrackedObject.size on each axis -- some tracks report a
+    # size of (0,0,0) before their first real detection is folded in, which
+    # would otherwise render as an invisible marker.
+    track_marker_min_size_m: 0.2
+
+    # Height of each track's TEXT_VIEW_FACING id/status label above its marker.
+    track_label_height_m: 0.3
+
+    # Line width for each trajectory's LINE_STRIP marker.
+    trajectory_line_width_m: 0.05
+
+    # Radius of the translucent uncertainty sphere drawn at a trajectory's
+    # final (furthest-horizon) point, before the sqrt(covariance-trace)-based
+    # radius is clamped to this maximum -- keeps a badly-diverged forecast
+    # from filling the whole view.
+    trajectory_uncertainty_max_radius_m: 2.0
+
+    # Diameter of each risk marker. ObstacleRisk carries no position of its
+    # own (interfaces/msg/ObstacleRisk.msg: "not a raw sensor measurement"),
+    # so risk markers are positioned via the matching track_id's cached
+    # trajectory -- see visualization_node.py's module docstring.
+    risk_marker_diameter_m: 0.6
+
+    # How long RViz keeps the most recently published marker before expiring
+    # it client-side if no replacement arrives -- set comfortably above the
+    # upstream publish period so markers don't visibly flicker, but still
+    # disappear promptly if a stage stops publishing.
+    marker_lifetime_sec: 1.0
