@@ -2,10 +2,16 @@
 
 Turns Gazebo's ground-truth entity poses into interfaces/DetectedObjectArray, the
 fixed contract cognitive_tracking (Module 4) consumes. This is deliberately the
-*only* node that reads the sim-only /world/<world_name>/pose/info topic -- on the
-real BeetleBot (Phase 2), a camera/lidar-based detector backend replaces this node's
-internals while publishing the exact same message shape on the same
-/perception/detections topic, so nothing downstream ever has to change.
+*only* node that reads the sim-only obstacle pose topics: each obstacle spawns with
+its own PosePublisher plugin (simulation_manager.OBSTACLE_POSE_PUBLISHER_PLUGIN),
+bridged per-model onto `/model/<name>/pose` (dynamic) or `/model/<name>/pose_static`
+(static) -- see _obstacle_pose_topics() for why one topic per obstacle is needed
+instead of a single shared one, and why plain /world/<world_name>/pose/info can't be
+used at all: SceneBroadcaster's Pose_V never sets the header data the tf2_msgs bridge
+conversion needs, so child_frame_id comes through empty -- on the real BeetleBot
+(Phase 2), a camera/lidar-based detector backend replaces this node's internals while
+publishing the exact same message shape on the same /perception/detections topic, so
+nothing downstream ever has to change.
 
 Kept deliberately staged rather than one callback that does everything, so a Phase-2
 swap only ever touches one stage:
@@ -27,20 +33,36 @@ from tf2_msgs.msg import TFMessage
 DETECTIONS_TOPIC = '/perception/detections'
 
 
+def _obstacle_pose_topics(num_static: int, num_dynamic: int) -> list[str]:
+    """Every obstacle's own PosePublisher topic (see simulation_manager's
+    static_obstacle_pose_topic()/dynamic_obstacle_pose_topic(), re-derived here rather
+    than imported since perception_node has no build dependency on simulation).
+    Confirmed on a real Harmonic install: this build's PosePublisher ignores a custom
+    <topic> override and always publishes per-model, with a static_publisher entity
+    only ever appearing on its "..._static"-suffixed topic -- so one shared topic
+    isn't possible and num_static_obstacles/num_dynamic_obstacles (hand-duplicated
+    from simulation/config/simulation_params.yaml, not derived) are needed just to
+    know how many per-model topics to subscribe to."""
+    return (
+        [f'/model/static_obstacle_{i}/pose_static' for i in range(num_static)]
+        + [f'/model/dynamic_obstacle_{i}/pose' for i in range(num_dynamic)]
+    )
+
+
 class PerceptionNode(Node):
 
     def __init__(self):
         super().__init__('perception_node')
 
-        self.declare_parameter('world_name', 'multi_obstacle_arena')
         self.declare_parameter('detection_frame_id', 'world')
         self.declare_parameter('publish_rate_hz', 10.0)
         self.declare_parameter('static_obstacle_size', 0.45)
         self.declare_parameter('dynamic_obstacle_diameter', 0.4)
         self.declare_parameter('dynamic_obstacle_height', 0.3)
+        self.declare_parameter('num_static_obstacles', 4)
+        self.declare_parameter('num_dynamic_obstacles', 6)
 
         gp = self.get_parameter
-        self.world_name = gp('world_name').value
         self.frame_id = gp('detection_frame_id').value
         self.publish_rate = gp('publish_rate_hz').value
         self.static_size = gp('static_obstacle_size').value
@@ -52,14 +74,19 @@ class PerceptionNode(Node):
         # callback and the publish timer on the same thread, never concurrently.
         self._latest_poses: dict[str, Transform] = {}
 
-        pose_topic = f'/world/{self.world_name}/pose/info'
-        self._pose_sub = self.create_subscription(TFMessage, pose_topic, self._pose_callback, 10)
+        pose_topics = _obstacle_pose_topics(
+            gp('num_static_obstacles').value, gp('num_dynamic_obstacles').value)
+        self._pose_subs = [
+            self.create_subscription(TFMessage, topic, self._pose_callback, 10)
+            for topic in pose_topics
+        ]
         self._detections_pub = self.create_publisher(DetectedObjectArray, DETECTIONS_TOPIC, 10)
         self._timer = self.create_timer(1.0 / self.publish_rate, self._publish_detections)
 
         self.get_logger().info(
-            f'perception_node ready: ground-truth detector subscribed to "{pose_topic}", '
-            f'publishing DetectedObjectArray on {DETECTIONS_TOPIC} at {self.publish_rate} Hz.')
+            f'perception_node ready: ground-truth detector subscribed to {len(pose_topics)} '
+            f'obstacle pose topics, publishing DetectedObjectArray on {DETECTIONS_TOPIC} '
+            f'at {self.publish_rate} Hz.')
 
     # ---- input (Phase 2 replaces this) -------------------------------------
 

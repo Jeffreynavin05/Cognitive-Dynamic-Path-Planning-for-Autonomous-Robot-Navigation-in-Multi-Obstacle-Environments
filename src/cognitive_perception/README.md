@@ -41,24 +41,39 @@ described in the top-level README and the explicit hand-off in `simulation/READM
   | Output | `_publish_detections` | The timer callback; the only method that touches the publisher. |
 
   Everything from *filter* onward is detection-source-agnostic: it only ever reads
-  `self._latest_poses`, never `/world/.../pose/info` directly, so replacing the input
+  `self._latest_poses`, never the obstacle pose topic directly, so replacing the input
   stage with a real camera/lidar pipeline in Phase 2 doesn't require touching filter,
   convert, assemble, or output at all.
-- **`perception_node` subscribes to `/world/<world_name>/pose/info`**
-  (`tf2_msgs/msg/TFMessage`, bridged by `simulation/launch/world.launch.py`) and keeps
-  the latest transform per entity name in memory, filtering to only
-  `static_obstacle_*` → `CLASS_STATIC_OBSTACLE` and `dynamic_obstacle_*` →
-  `CLASS_DYNAMIC_OBSTACLE` (see `simulation/README.md`'s naming convention). Everything
-  else in the pose stream -- the robot itself, arena walls, the ground plane -- is
-  silently skipped rather than published as `CLASS_UNKNOWN`, since none of those are
-  obstacles.
-- **Publishing is decoupled from the pose/info message rate.** Detections are built
+- **`perception_node` subscribes to one topic per obstacle**: `/model/static_obstacle_<i>/pose_static`
+  for each of `num_static_obstacles` and `/model/dynamic_obstacle_<i>/pose` for each of
+  `num_dynamic_obstacles` (`tf2_msgs/msg/TFMessage`, bridged by
+  `simulation/launch/world.launch.py`, one bridge line per topic) -- see
+  `_obstacle_pose_topics()`. It keeps the latest transform per entity name in memory,
+  filtering to only `static_obstacle_*` → `CLASS_STATIC_OBSTACLE` and
+  `dynamic_obstacle_*` → `CLASS_DYNAMIC_OBSTACLE` (see `simulation/README.md`'s naming
+  convention). This is deliberately **not** `/world/<world_name>/pose/info`: that topic
+  comes from `gz-sim`'s `SceneBroadcaster`, whose `Pose_V` sets each entity's `name` but
+  never the per-pose header data (`frame_id`/`child_frame_id`) that the `ros_gz_bridge`
+  `Pose→TransformStamped` conversion reads -- so every `child_frame_id` bridged from
+  `pose/info` comes through as an empty string and nothing is classifiable. Each
+  obstacle instead carries its own `gz-sim-pose-publisher-system` plugin
+  (`simulation_manager.OBSTACLE_POSE_PUBLISHER_PLUGIN`), which *does* set that header
+  data. One topic per obstacle rather than one shared topic because this build's
+  `PosePublisher` was confirmed, on a real Harmonic install, to ignore a custom
+  `<topic>` override and always publish on its per-model default
+  (`/model/<name>/pose`, or `/model/<name>/pose_static` for a `static_publisher`
+  entity) -- hence `num_static_obstacles`/`num_dynamic_obstacles` are duplicated into
+  `perception_params.yaml` just to know how many per-model topics to subscribe to.
+  Everything else that could theoretically appear in a pose stream -- the robot
+  itself, arena walls, the ground plane -- was never bridged onto these topics in the
+  first place, rather than being silently skipped downstream.
+- **Publishing is decoupled from the obstacle pose message rate.** Detections are built
   and published on a fixed `publish_rate_hz` timer (default 10 Hz) from whatever is
   currently cached, rather than republishing on every incoming pose message -- this
   gives `cognitive_tracking` a predictable cadence independent of Gazebo's own update
   rate.
-- **Bounding-box size is approximated, not measured.** `/world/.../pose/info` only
-  reports entity *position*, not extent, so `DetectedObject.size` is filled from
+- **Bounding-box size is approximated, not measured.** The obstacle pose topics only
+  report entity *position*, not extent, so `DetectedObject.size` is filled from
   config parameters that mirror `simulation`'s spawn ranges
   (`static_obstacle_min/max_size`, `dynamic_obstacle_radius`) rather than each
   entity's actual randomized per-run size. Acceptable for ground-truth Phase 1, where
@@ -74,13 +89,17 @@ described in the top-level README and the explicit hand-off in `simulation/READM
   detector backend's per-object score (e.g. a YOLO class-confidence output or a
   LiDAR cluster's fit quality), and `cognitive_tracking` already expects to consume
   a value that varies.
-- ⚠️ **`detection_frame_id` is an assumption, not a confirmed fact.** I haven't been
-  able to verify on a real Harmonic install what parent `frame_id` the `gz-sim`
-  world-pose bridge stamps on each `TransformStamped` in `/world/.../pose/info`
-  (empty string, `"world"`, and the world name itself are all plausible). It's a
-  config parameter specifically so this is a one-line fix in
-  `config/perception_params.yaml` if `ros2 topic echo` shows something else, not a
-  code change.
+- **`detection_frame_id` is set directly on the outgoing `DetectedObjectArray.header`,
+  independent of whatever is on the incoming `TransformStamped.header`.** Confirmed on
+  a real Harmonic install: the per-model pose topics' `header.frame_id` now comes
+  through as `"multi_obstacle_arena"` (the world name, via `PosePublisher`'s
+  `frame_id` header-data entry -- unlike `/world/.../pose/info`, which left it empty
+  before this fix), not `"world"`. `detection_frame_id` still defaults to `"world"`
+  and is applied unconditionally rather than copied from the input, since the position
+  *values* are in world coordinates either way and `"world"` is `cognitive_tracking`'s
+  expected frame name, not the world's SDF name. Still a config parameter so it's a
+  one-line fix in `config/perception_params.yaml` if that convention ever changes, not
+  a code change.
 - **No build dependency on `simulation`.** Per `PROJECT_CONTEXT.md` §7, this package
   only depends on `interfaces` for message types and treats `simulation` purely as a
   runtime topic provider -- consistent with the "digital twin" decoupling principle.

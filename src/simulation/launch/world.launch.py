@@ -58,6 +58,24 @@ def generate_launch_description():
             ],
             output='screen')])
 
+    # Ground truth for Module 3: each obstacle publishes its own named pose via a
+    # PosePublisher plugin (see simulation_manager.OBSTACLE_POSE_PUBLISHER_PLUGIN and
+    # *_pose_topic()) on its own per-model topic -- confirmed on a real Harmonic
+    # install that this build's PosePublisher ignores a custom <topic> override, so a
+    # single shared bridge line isn't possible; one line per obstacle is generated here
+    # from the same num_static_obstacles/num_dynamic_obstacles config simulation_manager
+    # spawns from. Filtered downstream by name prefix ("static_obstacle_" /
+    # "dynamic_obstacle_"). /world/<world>/pose/info is NOT used for this:
+    # SceneBroadcaster's Pose_V never sets the header data the tf2_msgs bridge
+    # conversion reads, so child_frame_id would come through empty.
+    obstacle_pose_bridge_args = [
+        f'/model/static_obstacle_{i}/pose_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'
+        for i in range(sim_params['num_static_obstacles'])
+    ] + [
+        f'/model/dynamic_obstacle_{i}/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'
+        for i in range(sim_params['num_dynamic_obstacles'])
+    ]
+
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -70,10 +88,7 @@ def generate_launch_description():
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-            # Ground truth for Module 3: pose of every entity in the world, filtered
-            # downstream by name prefix ("static_obstacle_" / "dynamic_obstacle_").
-            f'/world/{WORLD_NAME}/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
-        ],
+        ] + obstacle_pose_bridge_args,
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen')
 

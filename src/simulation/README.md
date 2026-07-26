@@ -30,11 +30,17 @@ for the same portability principle applied to the pipeline's internal messages.
   wheel-orientation/rolling-friction bugs for no loss of realism at this scope.
   ⚠️ I'm reasonably but not fully confident this plugin filename is exact for every
   Harmonic point release — see "If obstacles don't move" below if it doesn't load.
-- **Ground truth is exposed, not interpreted.** This package bridges
-  `/world/multi_obstacle_arena/pose/info` (every entity's pose, as `tf2_msgs/TFMessage`)
-  and stops there. Turning that into `interfaces/DetectedObjectArray` (filtering by
-  the `static_obstacle_*` / `dynamic_obstacle_*` name prefixes) is Module 3's job, not
-  this package's — keeps the environment and the perception logic decoupled.
+- **Ground truth is exposed, not interpreted.** This package bridges `/obstacles/pose`
+  (every obstacle's own pose, as `tf2_msgs/TFMessage`) and stops there. Turning that
+  into `interfaces/DetectedObjectArray` (filtering by the `static_obstacle_*` /
+  `dynamic_obstacle_*` name prefixes) is Module 3's job, not this package's — keeps the
+  environment and the perception logic decoupled. Each obstacle spawns with its own
+  `gz-sim-pose-publisher-system` plugin (`simulation_manager.OBSTACLE_POSE_PUBLISHER_PLUGIN`)
+  publishing onto that one shared topic, rather than the world's generic
+  `/world/multi_obstacle_arena/pose/info`: that topic's `SceneBroadcaster` source sets
+  each entity's `name` but never the per-pose header data the `ros_gz_bridge`
+  `tf2_msgs` conversion needs, so `child_frame_id` bridges through empty and nothing
+  downstream is classifiable by name.
 - **`/cmd_vel` is the sim's raw diff-drive input**, not `/cmd_vel_nav`. The real robot's
   `/cmd_vel_gate` arbitration node doesn't exist in sim yet; Module 8 (`robot_controller`)
   adds the equivalent relay so Nav2's real output topic works in both places.
@@ -64,7 +70,7 @@ colcon test-result --verbose
 ```bash
 # in another terminal, after world.launch.py is running
 ros2 topic hz /scan /imu/data /pi_camera/image_raw /wheel/odom
-ros2 topic echo /world/multi_obstacle_arena/pose/info --once
+ros2 topic echo /obstacles/pose --once
 ros2 run teleop_twist_keyboard teleop_twist_keyboard   # drive the robot manually
 ```
 Confirm in the Gazebo GUI: the robot sits in the south room, 4 blue static boxes and

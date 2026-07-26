@@ -2,9 +2,24 @@
 
 Owns the *environment*, not the robot: obstacle placement, obstacle motion, and nothing
 else. Ground-truth pose extraction for the perception pipeline is deliberately NOT this
-node's job -- it publishes nothing about obstacle identity/class, it only spawns entities
-into Gazebo. cognitive_perception (Module 3) is the one that reads the bridged
-/world/<world>/pose/info topic and turns raw poses into interfaces/DetectedObjectArray.
+node's job -- it publishes nothing about obstacle identity/class itself. Each spawned
+obstacle carries its own PosePublisher plugin (see OBSTACLE_POSE_PUBLISHER_PLUGIN and
+*_pose_topic() below) so cognitive_perception (Module 3) can read named, per-entity
+transforms off the bridged per-model topics and turn them into
+interfaces/DetectedObjectArray. A plain /world/<world>/pose/info bridge can't be used
+for this: SceneBroadcaster's Pose_V never sets the header data (frame_id/
+child_frame_id) that the tf2_msgs ros_gz_bridge conversion reads, so every
+child_frame_id comes through empty -- only PosePublisher fills it in.
+
+Confirmed on a real Harmonic (gz-sim 8) install: this build's PosePublisher does *not*
+honor a custom <topic> override on a per-model plugin (silently keeps publishing on its
+default topic instead, with no error) -- so *_pose_topic() below mirror the verified
+defaults instead of trying to consolidate onto one shared topic: `/model/<name>/pose`
+for a normal (moving) publisher, `/model/<name>/pose_static` for a `static_publisher`
+one (gz-sim never publishes a static_publisher entity on the plain, non-`_static`
+topic at all, since a truly static model never emits the pose-changed event the normal
+path relies on). world.launch.py's bridge args and perception_node's subscriptions
+both re-derive these same topic strings from the matching obstacle names.
 """
 import math
 import random
@@ -15,6 +30,24 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
+
+
+def static_obstacle_pose_topic(name: str) -> str:
+    return f'/model/{name}/pose_static'
+
+
+def dynamic_obstacle_pose_topic(name: str) -> str:
+    return f'/model/{name}/pose'
+
+
+OBSTACLE_POSE_PUBLISHER_PLUGIN = '''<plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <static_publisher>{static_publisher}</static_publisher>
+      <static_update_frequency>{update_frequency}</static_update_frequency>
+      <update_frequency>{update_frequency}</update_frequency>
+    </plugin>'''
 
 
 @dataclass
@@ -163,6 +196,7 @@ class SimulationManager(Node):
         <material><ambient>0.2 0.4 0.8 1</ambient><diffuse>0.2 0.4 0.8 1</diffuse></material>
       </visual>
     </link>
+    {OBSTACLE_POSE_PUBLISHER_PLUGIN.format(static_publisher='true', update_frequency='1')}
   </model>
 </sdf>'''
 
@@ -197,6 +231,7 @@ class SimulationManager(Node):
     <plugin filename="gz-sim-velocity-control-system" name="gz::sim::systems::VelocityControl">
       <topic>model/{name}/cmd_vel</topic>
     </plugin>
+    {OBSTACLE_POSE_PUBLISHER_PLUGIN.format(static_publisher='false', update_frequency=str(self.control_rate))}
   </model>
 </sdf>'''
 

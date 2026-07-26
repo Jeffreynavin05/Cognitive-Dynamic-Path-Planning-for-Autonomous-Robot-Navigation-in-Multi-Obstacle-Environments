@@ -1,21 +1,20 @@
 perception_node:
   ros__parameters:
-    # Must match simulation's world_name (simulation/config/simulation_params.yaml) --
-    # this is how perception_node finds the bridged ground-truth topic.
-    world_name: "multi_obstacle_arena"
-
-    # Assumption, not a confirmed fact (see README's design notes): the gz-sim
-    # world-pose bridge's exact parent frame_id on each TransformStamped hasn't been
-    # verified against a real Harmonic install. Kept as a parameter so it's a one-line
-    # fix in this file, not a code change, if `ros2 topic echo .../pose/info` disagrees.
+    # Applied unconditionally to the outgoing DetectedObjectArray.header, independent
+    # of the incoming TransformStamped.header (see README's design notes): confirmed
+    # on a real Harmonic install that the per-model obstacle pose topics report
+    # header.frame_id as "multi_obstacle_arena" (the world name), not "world". Kept as
+    # a parameter so it's a one-line fix in this file, not a code change, if that
+    # convention ever needs to change.
     detection_frame_id: "world"
 
-    # Deliberately decoupled from the pose/info message rate -- perception_node
-    # publishes from its cache on this timer, independent of Gazebo's own update rate.
+    # Deliberately decoupled from the obstacle pose topics' message rate --
+    # perception_node publishes from its cache on this timer, independent of Gazebo's
+    # own update rate.
     publish_rate_hz: 10.0
 
-    # Ground-truth pose/info reports position only, not entity extent, so bounding-box
-    # size is approximated from simulation's spawn parameters
+    # Ground-truth pose topics report position only, not entity extent, so
+    # bounding-box size is approximated from simulation's spawn parameters
     # (simulation/config/simulation_params.yaml) rather than measured per entity.
     # Midpoint of static_obstacle_min_size/static_obstacle_max_size (0.3-0.6).
     static_obstacle_size: 0.45
@@ -23,6 +22,14 @@ perception_node:
     dynamic_obstacle_diameter: 0.4
     # Matches the fixed cylinder <length> in simulation_manager's dynamic obstacle SDF.
     dynamic_obstacle_height: 0.3
+
+    # Must match simulation/config/simulation_params.yaml's num_static_obstacles /
+    # num_dynamic_obstacles -- hand-duplicated, not derived, since this package has no
+    # build dependency on simulation. Used only to know how many per-model
+    # /model/static_obstacle_<i>/pose_static and /model/dynamic_obstacle_<i>/pose
+    # topics to subscribe to (see _obstacle_pose_topics()).
+    num_static_obstacles: 4
+    num_dynamic_obstacles: 6
 
 camera_node:
   ros__parameters:
