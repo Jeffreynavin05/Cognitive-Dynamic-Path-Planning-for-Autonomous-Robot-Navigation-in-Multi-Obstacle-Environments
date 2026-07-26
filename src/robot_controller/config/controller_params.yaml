@@ -1,0 +1,21 @@
+controller_node:
+  ros__parameters:
+    # Phase-1 (Gazebo) default: Gazebo's raw diff-drive input topic (see
+    # PROJECT_CONTEXT.md section 5A). Override to '/cmd_vel_gate' for
+    # Phase-2 deployment onto the real BeetleBot, whose existing
+    # arbitration node listens there instead. This is the one place in the
+    # whole pipeline allowed to be environment-aware (section 15) -- every
+    # other module's topic names are fixed constants, never parameters
+    # (section 11); this one is deliberately a parameter for exactly that
+    # reason.
+    output_topic: '/cmd_vel'
+
+    # If no /cmd_vel_nav message arrives within this many seconds, publish
+    # a zero Twist regardless -- a last-line-of-defense safety stop for
+    # abnormal upstream silence (planner crash, network partition).
+    # planner_node's own zero-Twist on normal goal completion/cancellation
+    # only covers the well-behaved case; this covers the rest.
+    cmd_timeout_sec: 0.5
+
+    # How often the watchdog checks for staleness.
+    watchdog_check_rate_hz: 10.0

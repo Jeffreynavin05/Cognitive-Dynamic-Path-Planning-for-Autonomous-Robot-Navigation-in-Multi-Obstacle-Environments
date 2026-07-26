@@ -28,11 +28,15 @@ LSTM) without touching any other node.
 | `simulation` | done | Gazebo Harmonic world, URDF, randomized moving-obstacle spawner |
 | `cognitive_perception` | done | camera_node, lidar_node, perception_node |
 | `cognitive_tracking` | done | Multi-object tracking with persistent IDs |
-| `motion_prediction` | planned | Future trajectory forecasting |
-| `risk_assessment` | planned | Per-obstacle collision risk scoring (TTC, path intersection, etc.) |
-| `dynamic_planner` | planned | Nav2 integration, custom risk-aware costmap layer, MPPI controller |
-| `robot_controller` | planned | Bridges planner output to `/cmd_vel_nav`, safety envelope |
+| `motion_prediction` | done | Constant-velocity trajectory forecasting per tracked object |
+| `risk_assessment` | done | Per-obstacle collision risk scoring (TTC, path intersection, etc.) |
+| `dynamic_planner` | done | Self-hosted `NavigateToPose` action server; deterministic, risk-aware local planner |
+| `robot_controller` | done | Relays `/cmd_vel_nav` onto `/cmd_vel` (sim) / `/cmd_vel_gate` (hardware), with a command-staleness watchdog |
 | `cognitive_bringup` | planned | Launch files, RViz configs, world files, visualization_node |
+
+The full Phase-1 pipeline (`perception_node` through `controller_node`) is complete and runs
+end-to-end. See `PROJECT_CONTEXT.md` for full architectural detail, per-module implementation
+notes, and the design decisions behind each stage.
 
 ## Target platform
 

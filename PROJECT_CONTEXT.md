@@ -24,12 +24,13 @@ section here in the same change.
 9a. [Module 5 implementation details (motion_prediction)](#9a-module-5-implementation-details-motion_prediction)
 9b. [Module 6 implementation details (risk_assessment)](#9b-module-6-implementation-details-risk_assessment)
 9c. [Module 7 implementation details (dynamic_planner)](#9c-module-7-implementation-details-dynamic_planner)
+9d. [Module 8 implementation details (robot_controller)](#9d-module-8-implementation-details-robot_controller)
 10. [Design philosophy](#10-design-philosophy)
 11. [Coding conventions](#11-coding-conventions)
 12. [Testing conventions](#12-testing-conventions)
 13. [Configuration conventions](#13-configuration-conventions)
 14. [Known limitations](#14-known-limitations)
-15. [Planned Module 8](#15-planned-module-8)
+15. [Planned integration work](#15-planned-integration-work)
 16. [Important architectural decisions made during implementation](#16-important-architectural-decisions-made-during-implementation)
 17. [Assumptions and rationale behind each design choice](#17-assumptions-and-rationale-behind-each-design-choice)
 
@@ -77,7 +78,7 @@ current implementation status):
 ```
 camera_node ─┐
 lidar_node ──┴─→ perception_node → tracking_node → prediction_node → risk_node → planner_node → controller_node
-              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, done) (Module 7, done) (Module 8, planned)
+              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, done) (Module 7, done) (Module 8, done)
                                           │               │              │            │
                                           └───────────────┴──────────────┴────────────┴──→ visualization_node (planned)
 ```
@@ -106,7 +107,7 @@ package's source, `build/`, `install/`, and `log/` are generated artifacts
 | `motion_prediction` | ament_python | done (Module 5) | `prediction_node` — constant-velocity trajectory forecasting per `CONFIRMED`/`OCCLUDED` tracked object, publishing `PredictedTrajectoryArray` |
 | `risk_assessment` | ament_python | done (Module 6) | `risk_node` — per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) against the robot's own odometry-projected path, publishing `ObstacleRiskArray` |
 | `dynamic_planner` | ament_python | done (Module 7) | `planner_node` — self-hosted `NavigateToPose` action server; deterministic, risk-aware local planner (no real Nav2 bringup/costmap plugin), publishing velocity commands on `/cmd_vel_nav` |
-| `robot_controller` | ament_python (planned) | planned (Module 8) | Bridges planner output to `/cmd_vel_nav`, respects the real robot's `/cmd_vel_gate` arbitration |
+| `robot_controller` | ament_python | done (Module 8) | `controller_node` — relays `/cmd_vel_nav` onto a deployment-selected output topic (`/cmd_vel` sim / `/cmd_vel_gate` hardware), with a command-staleness watchdog safety stop |
 | `cognitive_bringup` | ament_python (planned) | planned (integration, unnumbered) | Top-level launch files, RViz configs, world files, `visualization_node` |
 
 No pipeline-stage package (`cognitive_perception`, `cognitive_tracking`, and
@@ -126,7 +127,7 @@ else it consumes from an upstream stage is a runtime-only topic subscription.
 | `motion_prediction` | done (Module 5) | `test_trajectory_predictor.py` (6), `test_prediction_node.py` (9) — 15 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 15 tests, 0 failures); additionally smoke-tested live — `prediction_node` run standalone, fed a fabricated `TrackedObjectArray` via `ros2 topic pub`, `/prediction/trajectories` echoed and confirmed `model_name: constant_velocity`, 30 `TrajectoryPoint`s at the default 3.0s/0.1s horizon/step, and growing position covariance across the array |
 | `risk_assessment` | done (Module 6) | `test_risk_model.py` (17), `test_risk_node.py` (8) — 25 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 76 tests workspace-wide, 0 failures); additionally smoke-tested live — `risk_node` run standalone, fed a fabricated `Odometry` and `PredictedTrajectoryArray` via `ros2 topic pub`, `/risk/obstacle_risks` echoed and confirmed correct `distance_to_robot`, `relative_speed`, `time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct collision-course obstacle |
 | `dynamic_planner` | done (Module 7) | `test_global_path.py` (5), `test_local_planner.py` (18), `test_planner_node.py` (13) — 36 tests total | Built with `colcon build` (all 7 workspace packages); unit suite green (`colcon test-result`: 117 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); additionally smoke-tested live in three scenarios — `planner_node` run standalone, fed a fabricated `Odometry` via `ros2 topic pub` and a goal via `ros2 action send_goal`: (1) far, obstacle-free goal — `/planner/global_path` published once (correct start/end waypoints) and `/cmd_vel_nav` published the expected dynamic-window-limited forward command (`linear.x=0.05`, matching hand-derived expectations) at 10 Hz; (2) a `THREAT_CRITICAL` risk with `time_to_collision=0.1` forced `/cmd_vel_nav` to all-zero throughout, despite a far, otherwise-clear goal; (3) a goal already within `goal_tolerance_m` made the action report `SUCCEEDED` immediately |
-| `robot_controller` | planned (Module 8) | — | Not started |
+| `robot_controller` | done (Module 8) | `test_controller_node.py` (8 tests) | Built with `colcon build` (all 8 workspace packages); unit suite green (`colcon test-result`: 125 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); additionally smoke-tested live in three scenarios — `controller_node` run standalone, fed fabricated `Twist` messages via `ros2 topic pub`: (1) relay correctness — each `/cmd_vel_nav` message reappeared immediately on `/cmd_vel`; (2) watchdog — real silence exceeding `cmd_timeout_sec` (including the natural startup latency between separate `ros2 topic pub` invocations) reliably produced a zero `Twist` on `/cmd_vel`, with relay resuming correctly on the next fresh command; (3) `output_topic:=/cmd_vel_gate` override confirmed via `ros2 node info` to redirect the publisher, proving the Phase-2 deployment path |
 | `cognitive_bringup` | planned | — | Not started |
 
 ## 5. Complete topic graph
@@ -145,7 +146,7 @@ twin principle, §1):
 | `/tf` | `tf2_msgs/TFMessage` | Gazebo → ROS | Standard TF tree |
 | `/joint_states` | `sensor_msgs/JointState` | Gazebo → ROS | Standard joint state |
 | `/clock` | `rosgraph_msgs/Clock` | Gazebo → ROS | N/A (sim-time only) |
-| `/cmd_vel` | `geometry_msgs/Twist` | ROS → Gazebo | Sim's raw diff-drive input. **Not** the real robot's Nav2 output topic — see `/cmd_vel_nav` below |
+| `/cmd_vel` | `geometry_msgs/Twist` | ROS → Gazebo | Sim's raw diff-drive input, published by `controller_node` (`robot_controller`, Module 8) in Phase 1. **Not** the real robot's Nav2 output topic — see `/cmd_vel_nav` below |
 
 `risk_node` (`risk_assessment`, Module 6) additionally subscribes to `/wheel/odom` directly — the
 only pipeline-stage node so far to consume a category-A bridge topic instead of only a
@@ -168,7 +169,7 @@ pipeline-contract topic, since there is no real planned-path topic to consume un
 | `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` (planned) |
 | `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `planner_node`, `visualization_node` (planned) |
 | `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `planner_node`, `visualization_node` (planned) |
-| `/cmd_vel_nav` | `geometry_msgs/Twist` | `planner_node` | `robot_controller` (planned) |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | `planner_node` | `controller_node` |
 | *(proposed, additive, not an `interfaces` message)* `/planner/global_path` | `nav_msgs/Path` | `planner_node` | `visualization_node` (planned) |
 
 Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly, not a custom
@@ -184,18 +185,17 @@ directly (not just `/risk/obstacle_risks`) for obstacle geometry — see §9c's
 `/scan`, but both only log a rate heartbeat in Phase 1 — neither publishes
 `DetectedObjectArray`, and `perception_node` does not consume their output.
 
-### E. `/cmd_vel_nav` — bridging topic pending Module 8
+### E. `/cmd_vel_nav` → `/cmd_vel` / `/cmd_vel_gate` — the actuation bridge
 
-`/cmd_vel_nav` is now published by `planner_node` (§9c) — it is `dynamic_planner`'s
-fixed output contract in every phase, per §11's "fixed pipeline-contract topic names
-are module-level constants" rule, not a Phase-2-only topic. On real hardware it will
-pass through the BeetleBot's existing `/cmd_vel_gate` arbitration node; that node
-does not exist in simulation, where `robot_controller` (Module 8, not yet built) is
-meant to relay `/cmd_vel_nav` onto `/cmd_vel` directly instead. Until Module 8 exists,
-`/cmd_vel_nav` has no subscriber in either environment and Gazebo will not move in
-response to it — the same bootstrapping gap Module 6 had with `dynamic_planner` before
-Module 7 existed (§9b's "Testing" note), resolved the same way: verify via
-`ros2 topic echo /cmd_vel_nav` rather than watching the robot drive.
+`/cmd_vel_nav` is `planner_node`'s fixed output contract in every phase (§9c), per §11's
+"fixed pipeline-contract topic names are module-level constants" rule — not a
+Phase-2-only topic. `controller_node` (`robot_controller`, Module 8) is its only
+subscriber, and is the one node in the entire pipeline allowed to know which
+environment it's running in (§9d, §16): it relays every `/cmd_vel_nav` message onto a
+deployment-selected `output_topic` parameter, `/cmd_vel` by default (Phase 1 — Gazebo's
+raw diff-drive input, table A) or `/cmd_vel_gate` for Phase 2 (the real BeetleBot's
+existing arbitration node, not built by this project). No other node ever needs to
+know which one is active.
 
 ## 6. Message flow
 
@@ -274,8 +274,18 @@ planner_node  — self-hosted nav2_msgs/action/NavigateToPose action server (no
 /cmd_vel_nav  (geometry_msgs/Twist, fixed pipeline-contract topic, §5E)
         │
         ▼
-(planned) robot_controller — relays /cmd_vel_nav to /cmd_vel_gate arbitration
-          (hardware) / directly onto /cmd_vel (sim)
+controller_node  — the one node allowed to be environment-aware (§9d):
+    1. relay      every /cmd_vel_nav message republished immediately onto
+                   output_topic ('/cmd_vel' sim default, '/cmd_vel_gate' for
+                   Phase 2), push-driven, no transformation
+    2. watchdog    independent timer (watchdog_check_rate_hz); publishes a
+                   zero Twist if no /cmd_vel_nav has arrived within
+                   cmd_timeout_sec -- a last-line-of-defense stop for
+                   abnormal upstream silence, distinct from planner_node's
+                   own zero-Twist on normal goal completion/cancellation
+        │
+        ▼
+/cmd_vel (Phase 1) or /cmd_vel_gate (Phase 2)  (geometry_msgs/Twist)
 
 (planned) visualization_node subscribes to TrackedObjectArray,
           PredictedTrajectoryArray, and ObstacleRiskArray independently, for
@@ -752,6 +762,80 @@ goal via `ros2 action send_goal`:
 3. **Goal already within `goal_tolerance_m`** — the action reported `SUCCEEDED` immediately, with
    `error_code: 0`.
 
+## 9d. Module 8 implementation details (`robot_controller`)
+
+Relays `geometry_msgs/Twist` commands from `/cmd_vel_nav` (`dynamic_planner`'s fixed output,
+every phase) onto a deployment-selected output topic — Gazebo's raw `/cmd_vel` in Phase 1, the
+real BeetleBot's existing `/cmd_vel_gate` arbitration node in Phase 2. The final Phase-1
+module; closes the loop from planning into actual actuation.
+
+**Node:** `controller_node`, subscribing to `/cmd_vel_nav` and republishing immediately
+(push-driven, no message transformation) onto `output_topic`. Runs an independent
+watchdog timer (`watchdog_check_rate_hz`) that publishes a zero `Twist` if no
+`/cmd_vel_nav` message has arrived within `cmd_timeout_sec`. Plain `rclpy.spin()` — no
+blocking callback exists here, so unlike `planner_node` (§9c) a `MultiThreadedExecutor`
+is not needed.
+
+**Staged design** — thinner than every prior module, since a `Twist`-to-`Twist` relay has no
+transformation and therefore no "assemble" stage:
+
+| Stage | Method | Job |
+|---|---|---|
+| Input | `_cmd_vel_nav_callback` | Relays immediately; records arrival time for the watchdog |
+| Safety | `_watchdog_check` | Timer callback; publishes a zero `Twist` if `/cmd_vel_nav` has gone stale |
+| Output | `_publish_command` | The only method that touches the output publisher |
+
+**Parameters** (all ROS parameters, `config/controller_params.yaml`):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `output_topic` | `/cmd_vel` | Deployment-selected relay destination — override to `/cmd_vel_gate` for Phase 2 |
+| `cmd_timeout_sec` | 0.5 | Watchdog: publish a zero `Twist` if `/cmd_vel_nav` has been silent this long |
+| `watchdog_check_rate_hz` | 10.0 | How often the watchdog checks for staleness |
+
+**Key implementation facts:**
+
+- **`output_topic` is a parameter, the one deliberate exception to §11's "topic names are
+  never ROS parameters" rule.** Every other topic name is a module-level constant because it's
+  a pipeline-stage-boundary contract that a deployment must never be able to silently break;
+  `output_topic` is a different kind of thing entirely — the sim/hardware bridge selection
+  point (§5A/§5E), meant to be reconfigured per deployment. Approved design decision.
+- **Command-staleness watchdog, not a pure relay.** `planner_node` already publishes an
+  explicit zero `Twist` on normal `NavigateToPose` success/cancellation (§9c), but that only
+  covers the well-behaved case — if `/cmd_vel_nav` goes silent abnormally (a `planner_node`
+  crash, a network partition), most Gazebo diff-drive plugins (and plausibly a real motor
+  controller) keep applying the last received `Twist` indefinitely, not just once. The
+  watchdog is a distinctly-placed last-line-of-defense safety measure appropriate for the
+  actuation bridge specifically, firing only once per stale period (reset by the next real
+  command) to avoid redundant re-stops. Approved design decision, directly serving "safety"
+  as an explicit priority for this final module.
+- **No independent velocity clamping.** `dynamic_planner` already enforces its own kinematic
+  limits (§9c); duplicating that check here was considered and rejected as redundant scope
+  creep for a module whose job is bridging, not planning. Approved design decision.
+- **No dependency on `interfaces` at all** — the first pipeline-stage package with no use for
+  any custom message type, since relaying `geometry_msgs/Twist` requires no transformation.
+  No build dependency on `dynamic_planner` either — `/cmd_vel_nav` is consumed purely as a
+  runtime topic, consistent with §7's interfaces-only dependency rule.
+- **Does not implement `/cmd_vel_gate`'s arbitration logic itself.** `robot_controller` only
+  publishes *into* `/cmd_vel_gate` on real hardware; the arbitration node listening there
+  (e.g. reconciling autonomous commands against a manual teleop/E-stop override) is existing
+  BeetleBot infrastructure this project does not build or modify.
+
+**Testing:** 8 pytest tests in `test_controller_node.py`, all built on fabricated `Twist`
+messages — no Gazebo, no live ROS graph, no `dynamic_planner`. Watchdog staleness is
+simulated by rewinding `node._last_received_time` with `rclpy.duration.Duration` rather than
+sleeping in real time, keeping the suite instant and deterministic. Additionally verified live
+during implementation, across three scenarios — `controller_node` run standalone, fed
+fabricated `Twist` messages over `ros2 topic pub`:
+
+1. **Relay correctness** — each `/cmd_vel_nav` message reappeared immediately on `/cmd_vel`.
+2. **Watchdog** — real silence exceeding `cmd_timeout_sec` (including the natural startup
+   latency between separate `ros2 topic pub` invocations, which alone exceeded the configured
+   timeout) reliably produced a zero `Twist` on `/cmd_vel`, with relay resuming correctly on
+   the next fresh command.
+3. **`output_topic:=/cmd_vel_gate` override** — confirmed via `ros2 node info /controller_node`
+   to redirect the publisher, proving the Phase-2 deployment path without any code change.
+
 ## 10. Design philosophy
 
 - **Contract-first decoupling.** The `interfaces` package is the only shared
@@ -806,6 +890,11 @@ goal via `ros2 action send_goal`:
   (e.g. `DETECTIONS_TOPIC`, `TRACKS_TOPIC`), never bare string literals and
   never ROS parameters — a stage-boundary topic name is part of the
   `interfaces` contract, not something a deployment should reconfigure.
+  **Exception:** `robot_controller`'s `controller_node` declares its output
+  destination (`output_topic`) as a ROS parameter, not a constant — it is
+  the sim/hardware bridge selection point (§5E), not a pipeline-stage
+  boundary, and is deliberately meant to be reconfigured per deployment
+  (§9d, §16).
 - Plain state-holding types use `@dataclass` (e.g. `Track`), not hand-rolled
   `__init__`/`__eq__`.
 - No premature abstraction: there is no base-class/plugin interface for
@@ -944,25 +1033,30 @@ goal via `ros2 action send_goal`:
 - `planner_node` accepts only one active `NavigateToPose` goal at a time,
   rejecting a new goal rather than preempting the current one — a real Nav2
   stack's preemption semantics are not replicated in Phase 1.
-- Until `robot_controller` (Module 8) exists, `/cmd_vel_nav` has no
-  subscriber and Gazebo will not move in response to it — see §5E.
+- `controller_node`'s watchdog only detects *silence* on `/cmd_vel_nav`, not
+  malformed or out-of-range content in a message that does arrive — it
+  performs no independent velocity clamping (§9d, an approved decision, not
+  an oversight), so a future planner backend that forgets its own kinematic
+  limits would not be caught at this layer.
+- `robot_controller` does not implement `/cmd_vel_gate`'s arbitration logic
+  — it only publishes into that topic on real hardware. The real BeetleBot's
+  arbitration node (reconciling autonomous commands against, e.g., a manual
+  teleop/E-stop override) is existing infrastructure this project assumes
+  exists but does not build, test, or verify (§9d, §17).
+- With Module 8 complete, the pipeline's `/cmd_vel_nav` → `/cmd_vel`
+  bootstrapping gap noted for Modules 6/7 (their outputs having no live
+  subscriber yet) is now closed — see §5E.
 - This document (`PROJECT_CONTEXT.md`) did not exist prior to Module 4's
   completion, despite being referenced by relative path in
   `cognitive_perception/cognitive_perception/perception_node.py`'s comments.
   This is the first canonical version; any prior informal notes it may have
   superseded are not preserved here.
 
-## 15. Planned Module 8
+## 15. Planned integration work
 
-Module 7 (`dynamic_planner`) is complete — see §9c for its implementation
-details.
-
-**Module 8 — `robot_controller`.** Bridges the planner's output to
-`/cmd_vel_nav` (not `/cmd_vel`), so it passes through the real robot's
-existing `/cmd_vel_gate` arbitration node on hardware. In simulation this
-arbitration node does not exist, so `/cmd_vel` is used directly there instead
-— `robot_controller`'s relay is what reconciles the two without any upstream
-node needing to know which environment it's in.
+All eight numbered modules (`cognitive_perception` through `robot_controller`) are
+complete — see §8, §9, §9a, §9b, §9c, §9d for implementation details. The full Phase-1
+pipeline runs end-to-end, perception through actuation.
 
 **Unnumbered integration package — `cognitive_bringup`.** Top-level launch
 files, RViz configs, world files, and `visualization_node` (subscribes to
@@ -1111,6 +1205,26 @@ independently, for display — not part of the control path).
 - `planner_node` accepts only one active `NavigateToPose` goal at a time
   (rejects a new goal rather than preempting), the simplest correct Phase-1
   behavior, deferring real preemption semantics to a future Nav2 stack.
+- `robot_controller`'s `output_topic` is a declared ROS parameter rather than
+  a fixed module-level constant like every other topic in this workspace —
+  approved as the one deliberate exception to §11's "topic names are never
+  parameters" rule, because it is the sim/hardware bridge selection point,
+  not a pipeline-stage-boundary contract (§9d).
+- `controller_node` includes an independent command-staleness watchdog
+  (publishes a zero `Twist` if `/cmd_vel_nav` goes silent past
+  `cmd_timeout_sec`) rather than being a pure relay — approved because
+  `planner_node`'s own zero-Twist only covers normal goal
+  completion/cancellation, leaving abnormal upstream silence (a crash, a
+  network partition) unhandled otherwise (§9d).
+- `robot_controller` performs no independent velocity clamping, even though
+  it is the final actuation gate — considered and rejected as redundant
+  scope creep given `dynamic_planner` already enforces its own kinematic
+  limits; a bridging module duplicating a planning module's safety checks
+  was judged to add a second place those limits must be kept in sync, not
+  genuine defense-in-depth (§9d).
+- `controller_node` uses plain `rclpy.spin()`, not the `MultiThreadedExecutor`
+  `planner_node` needs — its subscription callback and watchdog timer are
+  both non-blocking, so §11's executor exception does not apply here.
 
 ## 17. Assumptions and rationale behind each design choice
 
@@ -1217,3 +1331,24 @@ independently, for display — not part of the control path).
   revisiting if either the control rate drops much lower or upstream
   publishing becomes bursty, the same category of assumption §17 already
   makes about `perception_node`'s publish rate for Module 4.
+- **Assumes the real BeetleBot's `/cmd_vel_gate` accepts `geometry_msgs/Twist`**,
+  the same type as `/cmd_vel_nav` and `/cmd_vel` — `robot_controller`'s relay
+  performs no message-type conversion. If the real arbitration node expects a
+  different message type or an additional priority/source field,
+  `controller_node._publish_command`'s output construction is the one place
+  that would need to change (§9d).
+- **Assumes a Gazebo diff-drive plugin (and plausibly a real motor
+  controller) holds the last received `Twist` indefinitely rather than
+  requiring periodic re-publication to keep moving.** This is the entire
+  motivation for `controller_node`'s watchdog (§9d) — if the actual actuation
+  layer instead has its own built-in command-timeout/failsafe, the watchdog
+  becomes redundant defense-in-depth rather than the only safeguard, which is
+  still an acceptable outcome but worth confirming against the real
+  BeetleBot's motor controller behavior in Phase 2.
+- **Assumes the real BeetleBot's `/cmd_vel_gate` arbitration node already
+  exists, is already correct, and needs no changes from this project** —
+  `robot_controller` only ever publishes into it, per `PROJECT_CONTEXT.md`'s
+  original Module 8 description. If Phase 2 discovers `/cmd_vel_gate` doesn't
+  exist yet or behaves differently than documented here, that is
+  BeetleBot-platform work outside this pipeline's packages, not a
+  `robot_controller` change.
