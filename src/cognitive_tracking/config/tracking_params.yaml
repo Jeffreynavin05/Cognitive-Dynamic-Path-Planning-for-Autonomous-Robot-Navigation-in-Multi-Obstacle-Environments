@@ -1,0 +1,28 @@
+tracking_node:
+  ros__parameters:
+    # Euclidean gating threshold (metres) for greedy nearest-neighbor association.
+    # A detection farther than this from every existing track's last known
+    # position spawns a new track instead of matching one. No Mahalanobis gating
+    # yet -- the Kalman filter still maintains a full 6x6 covariance so that can
+    # be added later without a message-contract change.
+    gating_distance_m: 1.0
+
+    # Track lifecycle thresholds (interfaces/msg/TrackedObject.msg's STATUS_*):
+    # consecutive hits before STATUS_TENTATIVE -> STATUS_CONFIRMED.
+    confirm_after_hits: 3
+    # consecutive misses before a CONFIRMED/OCCLUDED track is marked
+    # STATUS_OCCLUDED (coasted from its last Kalman estimate, not yet dropped).
+    occluded_after_misses: 1
+    # consecutive misses before a track is marked STATUS_LOST and dropped after
+    # being published once in that state.
+    lost_after_misses: 5
+
+    # Kalman filter noise parameters for the constant-velocity model
+    # (cognitive_tracking.kalman_filter.KalmanFilter6D).
+    process_noise_std: 0.5        # m/s^2-ish acceleration assumption per predict step
+    measurement_noise_std: 0.1    # m, matches Module 3's ground-truth positional accuracy
+    initial_velocity_variance: 10.0  # deliberately large: velocity is unknown at spawn
+
+    # Guards the constant-velocity predict step against a zero/negative dt from
+    # duplicate or out-of-order detection timestamps.
+    min_dt_sec: 0.001
