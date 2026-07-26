@@ -21,12 +21,13 @@ section here in the same change.
 7. [Interfaces overview](#7-interfaces-overview)
 8. [Module 3 implementation details (cognitive_perception)](#8-module-3-implementation-details-cognitive_perception)
 9. [Module 4 implementation details (cognitive_tracking)](#9-module-4-implementation-details-cognitive_tracking)
+9a. [Module 5 implementation details (motion_prediction)](#9a-module-5-implementation-details-motion_prediction)
 10. [Design philosophy](#10-design-philosophy)
 11. [Coding conventions](#11-coding-conventions)
 12. [Testing conventions](#12-testing-conventions)
 13. [Configuration conventions](#13-configuration-conventions)
 14. [Known limitations](#14-known-limitations)
-15. [Planned Modules 5–8](#15-planned-modules-58)
+15. [Planned Modules 6–8](#15-planned-modules-68)
 16. [Important architectural decisions made during implementation](#16-important-architectural-decisions-made-during-implementation)
 17. [Assumptions and rationale behind each design choice](#17-assumptions-and-rationale-behind-each-design-choice)
 
@@ -74,7 +75,7 @@ current implementation status):
 ```
 camera_node ─┐
 lidar_node ──┴─→ perception_node → tracking_node → prediction_node → risk_node → planner_node → controller_node
-              (Module 3, done)   (Module 4, done)  (Module 5, planned) (Module 6, planned) (Module 7, planned) (Module 8, planned)
+              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, planned) (Module 7, planned) (Module 8, planned)
                                           │               │              │            │
                                           └───────────────┴──────────────┴────────────┴──→ visualization_node (planned)
 ```
@@ -100,7 +101,7 @@ package's source, `build/`, `install/`, and `log/` are generated artifacts
 | `simulation` | ament_python | done | Gazebo Harmonic world, BeetleBot URDF, randomized static/dynamic obstacle spawner and wander controller ("digital twin" boundary) |
 | `cognitive_perception` | ament_python | done (Module 3) | `camera_node`, `lidar_node`, `perception_node` — ground-truth (Phase 1) / real-sensor (Phase 2) object detection, publishing `DetectedObjectArray` |
 | `cognitive_tracking` | ament_python | done (Module 4) | `tracking_node` — Kalman-filter multi-object tracking with persistent IDs, publishing `TrackedObjectArray` |
-| `motion_prediction` | ament_python (planned) | planned (Module 5) | Future trajectory forecasting per tracked object |
+| `motion_prediction` | ament_python | done (Module 5) | `prediction_node` — constant-velocity trajectory forecasting per `CONFIRMED`/`OCCLUDED` tracked object, publishing `PredictedTrajectoryArray` |
 | `risk_assessment` | ament_python (planned) | planned (Module 6) | Per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) |
 | `dynamic_planner` | ament_python (planned) | planned (Module 7) | Nav2 integration, custom risk-aware costmap layer, MPPI controller |
 | `robot_controller` | ament_python (planned) | planned (Module 8) | Bridges planner output to `/cmd_vel_nav`, respects the real robot's `/cmd_vel_gate` arbitration |
@@ -120,7 +121,7 @@ else it consumes from an upstream stage is a runtime-only topic subscription.
 | `simulation` | done | `test/test_geometry.py` (geometry/spatial-sampling logic) | Manually verified in Gazebo Harmonic (obstacle spawn, wander, wall avoidance) |
 | `cognitive_perception` | done | `test_perception_node.py` (6 tests), `test_sensor_placeholders.py` (2 tests) | Manually verified against live Gazebo ground truth |
 | `cognitive_tracking` | done | `test_kalman_filter.py` (5), `test_association.py` (6), `test_track.py` (9), `test_tracking_node.py` (7) — 27 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 36 tests workspace-wide, 0 failures); additionally smoke-tested live — `tracking_node` run standalone, fed fabricated `DetectedObjectArray` messages via `ros2 topic pub`, `/tracking/tracks` echoed and confirmed correct `track_id` stability, `STATUS_TENTATIVE → STATUS_CONFIRMED` transition at hit 3, growing `age`, and shrinking/coupling covariance across predict/update cycles |
-| `motion_prediction` | planned (Module 5) | — | Not started |
+| `motion_prediction` | done (Module 5) | `test_trajectory_predictor.py` (6), `test_prediction_node.py` (9) — 15 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 15 tests, 0 failures); additionally smoke-tested live — `prediction_node` run standalone, fed a fabricated `TrackedObjectArray` via `ros2 topic pub`, `/prediction/trajectories` echoed and confirmed `model_name: constant_velocity`, 30 `TrajectoryPoint`s at the default 3.0s/0.1s horizon/step, and growing position covariance across the array |
 | `risk_assessment` | planned (Module 6) | — | Not started |
 | `dynamic_planner` | planned (Module 7) | — | Not started |
 | `robot_controller` | planned (Module 8) | — | Not started |
@@ -157,8 +158,8 @@ twin principle, §1):
 | Topic | Type | Publisher | Subscriber(s) |
 |---|---|---|---|
 | `/perception/detections` | `interfaces/DetectedObjectArray` | `perception_node` | `tracking_node` |
-| `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction` (planned), `visualization_node` (planned) |
-| *(planned)* `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `motion_prediction` | `risk_assessment`, `visualization_node` |
+| `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` (planned) |
+| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_assessment` (planned), `visualization_node` (planned) |
 | *(planned)* `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_assessment` | `dynamic_planner`, `visualization_node` |
 
 Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly, not a custom
@@ -202,8 +203,18 @@ tracking_node  — synchronous per incoming DetectedObjectArray:
                    velocity, 6×6 covariance, status, age)
         │
         ▼
-(planned) motion_prediction — forecasts a PredictedTrajectoryArray per track over
-          a fixed horizon; model_name field identifies the forecasting backend
+prediction_node  — synchronous per incoming TrackedObjectArray:
+    1. filter    keep only STATUS_CONFIRMED/STATUS_OCCLUDED tracks (TENTATIVE is
+                 unreliable, LOST is about to be dropped)
+    2. predict   constant-velocity forward projection, horizon_sec/step_sec
+                 points per track (default 3.0s / 0.1s = 30 points), position
+                 covariance grown via a locally-reimplemented F/Q propagation
+                 (see §9a — not imported from cognitive_tracking)
+        │
+        ▼
+/prediction/trajectories  (interfaces/PredictedTrajectoryArray: per-track
+                           model_name="constant_velocity", TrajectoryPoint[]
+                           with stamp/position/velocity/growing 3x3 covariance)
         │
         ▼
 (planned) risk_assessment — combines each PredictedTrajectoryArray with the
@@ -241,7 +252,7 @@ boundary as well as to the pipeline-stage boundaries.
 |---|---|---|
 | `DetectedObjectArray` | `perception_node` | `tracking_node` |
 | `TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` |
-| `PredictedTrajectoryArray` | `motion_prediction` | `risk_assessment`, `visualization_node` |
+| `PredictedTrajectoryArray` | `prediction_node` (`motion_prediction`) | `risk_assessment`, `visualization_node` |
 | `ObstacleRiskArray` | `risk_assessment` | `dynamic_planner`, `visualization_node` |
 
 Key enums:
@@ -405,6 +416,83 @@ run standalone and fed real `DetectedObjectArray` messages over
 `ros2 topic pub`/`ros2 topic echo`, confirming correct behavior end-to-end
 through the actual ROS graph, not just direct method calls.
 
+## 9a. Module 5 implementation details (`motion_prediction`)
+
+Turns `interfaces/TrackedObjectArray` into `interfaces/PredictedTrajectoryArray` —
+a constant-velocity forecast trajectory per stable tracked object — the contract
+Module 6 (`risk_assessment`) and `visualization_node` consume.
+
+**Node:** `prediction_node`, subscribing to `/tracking/tracks` and publishing
+`PredictedTrajectoryArray` on `/prediction/trajectories` **synchronously**, once
+per incoming `TrackedObjectArray` (no independent timer, mirroring `tracking_node`).
+
+**Staged design** — mirrors `cognitive_perception`/`cognitive_tracking`'s convention:
+
+| Stage | Method | Job |
+|---|---|---|
+| Input | `_tracks_callback` | Entry point; drives every stage below in order |
+| Filter | `_select_predictable_tracks` | Keeps only `STATUS_CONFIRMED`/`STATUS_OCCLUDED` tracks |
+| Predict | `_predict_trajectory` | Per-track constant-velocity forward projection (`motion_prediction.trajectory_predictor`) |
+| Assemble | `_build_trajectory_array` | Pure message-building, no I/O |
+| Output | `_publish` | The only method that touches the publisher |
+
+**Supporting module** (free of ROS/rclpy imports, independently unit-testable):
+
+- `trajectory_predictor.py` — `predict_trajectory()`: repeatedly applies a
+  constant-velocity state-transition (`F`) and process-noise (`Q`) matrix,
+  identical in form to `cognitive_tracking.kalman_filter.KalmanFilter6D.predict()`
+  but **reimplemented locally**, `horizon_sec / step_sec` times, starting from a
+  `TrackedObject`'s published position/velocity/6×6 covariance. Returns one
+  `(offset_sec, position, velocity, position_covariance)` tuple per step; the
+  3×3 position-covariance block is what fills `TrajectoryPoint.covariance`.
+
+**Parameters** (all ROS parameters, `config/prediction_params.yaml`):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `horizon_sec` | 3.0 | How far into the future to forecast each track (seconds) |
+| `step_sec` | 0.1 | Spacing between forecast points (seconds) — 30 points/track at the defaults |
+| `process_noise_std` | 0.5 | Process-noise std for this package's own covariance propagation — independently declared, not shared with `cognitive_tracking`'s parameter of the same name |
+
+**Key implementation facts:**
+
+- Only `STATUS_CONFIRMED` and `STATUS_OCCLUDED` tracks are forecast.
+  `STATUS_TENTATIVE` tracks have too little history to trust, and
+  `STATUS_LOST` tracks are already about to be dropped by `tracking_node` —
+  forecasting either would be forecasting noise. `STATUS_OCCLUDED` tracks are
+  included deliberately: their coasted Kalman estimate is still worth
+  projecting forward while the tracker waits to reconfirm or drop them.
+- The constant-velocity forecast math is **deliberately duplicated**, not
+  imported, from `cognitive_tracking.kalman_filter.KalmanFilter6D.predict()` —
+  same `F`/`Q` construction, independent implementation — so
+  `motion_prediction` has no build/runtime dependency on `cognitive_tracking`
+  (§7). A future change to one filter's noise model does not silently change
+  the other's forecast.
+- `process_noise_std` is declared independently in
+  `motion_prediction/config/prediction_params.yaml`, not derived from or
+  synced with `cognitive_tracking/config/tracking_params.yaml`'s parameter of
+  the same name — consistent with this workspace's existing
+  deliberate-duplication convention (§13's `num_static_obstacles` example).
+- `model_name` is hardcoded to `"constant_velocity"` on every published
+  `PredictedTrajectory`, purely for logging/debugging per
+  `interfaces/msg/PredictedTrajectory.msg`'s own comment — `risk_assessment`
+  must never branch on it.
+- Publishing is synchronous with track arrival, not its own timer — same
+  reasoning as `tracking_node` (Module 4 already publishes at a fixed cadence,
+  so a second independent timer would add complexity without benefit in
+  Phase 1).
+- No build dependency on `cognitive_tracking` — treats `/tracking/tracks` as a
+  pure runtime topic source, consistent with §7's interfaces-only dependency
+  rule.
+
+**Testing:** 15 pytest tests across two files (`test_trajectory_predictor.py`,
+6 tests; `test_prediction_node.py`, 9 tests), all built on fabricated inputs —
+no Gazebo, no live ROS graph, no `tracking_node`. Additionally verified live
+during implementation: `prediction_node` run standalone and fed a fabricated
+`TrackedObjectArray` over `ros2 topic pub`/`ros2 topic echo`, confirming
+correct `model_name`, point count, and growing covariance end-to-end through
+the actual ROS graph.
+
 ## 10. Design philosophy
 
 - **Contract-first decoupling.** The `interfaces` package is the only shared
@@ -558,16 +646,10 @@ through the actual ROS graph, not just direct method calls.
   This is the first canonical version; any prior informal notes it may have
   superseded are not preserved here.
 
-## 15. Planned Modules 5–8
+## 15. Planned Modules 6–8
 
-**Module 5 — `motion_prediction`.** Consumes `interfaces/TrackedObjectArray`,
-publishes `interfaces/PredictedTrajectoryArray`. The Phase-1 backend is
-expected to be constant-velocity forward projection
-(`PredictedTrajectory.model_name = "constant_velocity"`), matching the
-per-`TrajectoryPoint` covariance field already designed to grow with horizon.
-Should follow the same package scaffolding and staged-node conventions as
-Modules 3 and 4 (declare parameters via a `config/*.yaml`, staged private
-methods, pure "assemble" step, fabricated-input pytest suite).
+Module 5 (`motion_prediction`) is complete — see §9a for its implementation
+details.
 
 **Module 6 — `risk_assessment`.** Consumes `PredictedTrajectoryArray` (and,
 implicitly, the robot's own planned/current path or pose), publishes
@@ -640,6 +722,23 @@ independently, for display — not part of the control path).
 - `class_id`/`size` on a `TrackedObject` are overwritten by the newest matched
   detection with no voting, deferring classification fusion until a real
   (fallible) detector backend exists to make voting meaningful.
+- `motion_prediction` forecasts only `STATUS_CONFIRMED`/`STATUS_OCCLUDED`
+  tracks, never `STATUS_TENTATIVE` (too little history) or `STATUS_LOST`
+  (already about to be dropped by `tracking_node`).
+- `motion_prediction`'s constant-velocity covariance propagation
+  (`trajectory_predictor.py`) reimplements the same `F`/`Q` construction as
+  `cognitive_tracking.kalman_filter.KalmanFilter6D.predict()` rather than
+  importing it, so the two packages stay architecturally decoupled (§7) even
+  though the underlying math is deliberately equivalent.
+- `motion_prediction` declares its own `process_noise_std` parameter
+  independently of `cognitive_tracking`'s parameter of the same name, rather
+  than sharing or deriving it — consistent with this workspace's existing
+  deliberate-duplication convention (§13).
+- `prediction_node` publishes synchronously per incoming `TrackedObjectArray`,
+  with no independent forecasting timer, mirroring `tracking_node`'s
+  synchronous-publish decision (Module 4 already publishes at a fixed
+  cadence, so a second timer here would add complexity without benefit in
+  Phase 1).
 
 ## 17. Assumptions and rationale behind each design choice
 
@@ -685,3 +784,12 @@ independently, for display — not part of the control path).
   decision in Module 4 should be reconsidered rather than treated as fixed
   policy — the reason to defer it was avoiding a new dependency, not that
   greedy matching is believed to be sufficient forever.
+- **Assumes obstacle motion is well-approximated by a constant-velocity model
+  over `motion_prediction`'s 3-second default horizon.** A real obstacle that
+  turns, accelerates, or decelerates within that window will have its forecast
+  trajectory diverge from its actual path; `risk_assessment` (Module 6) should
+  treat `PredictedTrajectory`'s per-point covariance (which grows with
+  horizon) as the mechanism for expressing this growing uncertainty, not treat
+  the forecast position as exact. Revisit if Module 6 needs tighter forecasts
+  for fast-turning obstacles — the `model_name` field exists precisely so a
+  learned model can replace this assumption later without an interface change.

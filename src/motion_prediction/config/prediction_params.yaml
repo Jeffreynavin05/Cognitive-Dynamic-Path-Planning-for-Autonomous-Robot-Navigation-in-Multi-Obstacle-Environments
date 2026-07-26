@@ -1,0 +1,15 @@
+prediction_node:
+  ros__parameters:
+    # How far into the future to forecast each track (seconds).
+    horizon_sec: 3.0
+
+    # Spacing between forecast points (seconds). horizon_sec / step_sec
+    # trajectory points are produced per track -- 3.0 / 0.1 = 30 points.
+    step_sec: 0.1
+
+    # Process-noise std used by this package's own constant-velocity
+    # covariance propagation (motion_prediction.trajectory_predictor).
+    # Declared independently of cognitive_tracking's process_noise_std --
+    # the two packages must stay architecturally decoupled even though the
+    # underlying math is equivalent (see this package's README).
+    process_noise_std: 0.5
