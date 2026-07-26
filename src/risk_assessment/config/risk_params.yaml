@@ -1,0 +1,34 @@
+risk_node:
+  ros__parameters:
+    # Combined with obstacle_radius_m to form the collision_radius used for
+    # time_to_collision. Approximate BeetleBot chassis radius.
+    robot_radius_m: 0.2
+
+    # Generic fixed obstacle radius, since PredictedTrajectory carries no
+    # per-obstacle size/class_id (Phase 1 simplification -- see this
+    # package's README). Not derived from any specific obstacle's real size.
+    obstacle_radius_m: 0.4
+
+    # Stand-in for real robot localization uncertainty, which Phase 1 does
+    # not yet track/publish. Combined with each obstacle's own propagated
+    # position covariance for path_intersection_prob.
+    robot_position_std_m: 0.1
+
+    # risk_score = weight_ttc*ttc_component + weight_prob*prob_component
+    #            + weight_speed*speed_component + weight_distance*distance_component
+    # Intended to sum to 1.0; the final score is clamped to [0, 1] regardless.
+    weight_ttc: 0.35
+    weight_prob: 0.35
+    weight_speed: 0.15
+    weight_distance: 0.15
+
+    # Saturation points for the speed/distance risk-score components: a
+    # closing speed at or above this contributes its full share of risk_score.
+    max_relative_speed_mps: 3.0
+    # A distance at or beyond this contributes zero distance-based risk.
+    max_distance_m: 5.0
+
+    # risk_score cut points for threat_level (THREAT_LOW below threat_medium_min).
+    threat_medium_min: 0.25
+    threat_high_min: 0.5
+    threat_critical_min: 0.75

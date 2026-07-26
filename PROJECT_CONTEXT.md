@@ -22,12 +22,13 @@ section here in the same change.
 8. [Module 3 implementation details (cognitive_perception)](#8-module-3-implementation-details-cognitive_perception)
 9. [Module 4 implementation details (cognitive_tracking)](#9-module-4-implementation-details-cognitive_tracking)
 9a. [Module 5 implementation details (motion_prediction)](#9a-module-5-implementation-details-motion_prediction)
+9b. [Module 6 implementation details (risk_assessment)](#9b-module-6-implementation-details-risk_assessment)
 10. [Design philosophy](#10-design-philosophy)
 11. [Coding conventions](#11-coding-conventions)
 12. [Testing conventions](#12-testing-conventions)
 13. [Configuration conventions](#13-configuration-conventions)
 14. [Known limitations](#14-known-limitations)
-15. [Planned Modules 6–8](#15-planned-modules-68)
+15. [Planned Modules 7–8](#15-planned-modules-7-8)
 16. [Important architectural decisions made during implementation](#16-important-architectural-decisions-made-during-implementation)
 17. [Assumptions and rationale behind each design choice](#17-assumptions-and-rationale-behind-each-design-choice)
 
@@ -75,7 +76,7 @@ current implementation status):
 ```
 camera_node ─┐
 lidar_node ──┴─→ perception_node → tracking_node → prediction_node → risk_node → planner_node → controller_node
-              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, planned) (Module 7, planned) (Module 8, planned)
+              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, done) (Module 7, planned) (Module 8, planned)
                                           │               │              │            │
                                           └───────────────┴──────────────┴────────────┴──→ visualization_node (planned)
 ```
@@ -102,7 +103,7 @@ package's source, `build/`, `install/`, and `log/` are generated artifacts
 | `cognitive_perception` | ament_python | done (Module 3) | `camera_node`, `lidar_node`, `perception_node` — ground-truth (Phase 1) / real-sensor (Phase 2) object detection, publishing `DetectedObjectArray` |
 | `cognitive_tracking` | ament_python | done (Module 4) | `tracking_node` — Kalman-filter multi-object tracking with persistent IDs, publishing `TrackedObjectArray` |
 | `motion_prediction` | ament_python | done (Module 5) | `prediction_node` — constant-velocity trajectory forecasting per `CONFIRMED`/`OCCLUDED` tracked object, publishing `PredictedTrajectoryArray` |
-| `risk_assessment` | ament_python (planned) | planned (Module 6) | Per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) |
+| `risk_assessment` | ament_python | done (Module 6) | `risk_node` — per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) against the robot's own odometry-projected path, publishing `ObstacleRiskArray` |
 | `dynamic_planner` | ament_python (planned) | planned (Module 7) | Nav2 integration, custom risk-aware costmap layer, MPPI controller |
 | `robot_controller` | ament_python (planned) | planned (Module 8) | Bridges planner output to `/cmd_vel_nav`, respects the real robot's `/cmd_vel_gate` arbitration |
 | `cognitive_bringup` | ament_python (planned) | planned (integration, unnumbered) | Top-level launch files, RViz configs, world files, `visualization_node` |
@@ -122,7 +123,7 @@ else it consumes from an upstream stage is a runtime-only topic subscription.
 | `cognitive_perception` | done | `test_perception_node.py` (6 tests), `test_sensor_placeholders.py` (2 tests) | Manually verified against live Gazebo ground truth |
 | `cognitive_tracking` | done | `test_kalman_filter.py` (5), `test_association.py` (6), `test_track.py` (9), `test_tracking_node.py` (7) — 27 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 36 tests workspace-wide, 0 failures); additionally smoke-tested live — `tracking_node` run standalone, fed fabricated `DetectedObjectArray` messages via `ros2 topic pub`, `/tracking/tracks` echoed and confirmed correct `track_id` stability, `STATUS_TENTATIVE → STATUS_CONFIRMED` transition at hit 3, growing `age`, and shrinking/coupling covariance across predict/update cycles |
 | `motion_prediction` | done (Module 5) | `test_trajectory_predictor.py` (6), `test_prediction_node.py` (9) — 15 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 15 tests, 0 failures); additionally smoke-tested live — `prediction_node` run standalone, fed a fabricated `TrackedObjectArray` via `ros2 topic pub`, `/prediction/trajectories` echoed and confirmed `model_name: constant_velocity`, 30 `TrajectoryPoint`s at the default 3.0s/0.1s horizon/step, and growing position covariance across the array |
-| `risk_assessment` | planned (Module 6) | — | Not started |
+| `risk_assessment` | done (Module 6) | `test_risk_model.py` (17), `test_risk_node.py` (8) — 25 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 76 tests workspace-wide, 0 failures); additionally smoke-tested live — `risk_node` run standalone, fed a fabricated `Odometry` and `PredictedTrajectoryArray` via `ros2 topic pub`, `/risk/obstacle_risks` echoed and confirmed correct `distance_to_robot`, `relative_speed`, `time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct collision-course obstacle |
 | `dynamic_planner` | planned (Module 7) | — | Not started |
 | `robot_controller` | planned (Module 8) | — | Not started |
 | `cognitive_bringup` | planned | — | Not started |
@@ -145,6 +146,11 @@ twin principle, §1):
 | `/clock` | `rosgraph_msgs/Clock` | Gazebo → ROS | N/A (sim-time only) |
 | `/cmd_vel` | `geometry_msgs/Twist` | ROS → Gazebo | Sim's raw diff-drive input. **Not** the real robot's Nav2 output topic — see `/cmd_vel_nav` below |
 
+`risk_node` (`risk_assessment`, Module 6) additionally subscribes to `/wheel/odom` directly — the
+only pipeline-stage node so far to consume a category-A bridge topic instead of only a
+pipeline-contract topic, since there is no real planned-path topic to consume until
+`dynamic_planner` (Module 7) exists (see §9b, §16).
+
 ### B. Ground-truth-only topics (Phase 1 simulation, no real-robot equivalent)
 
 | Topic | Type | Published by |
@@ -159,8 +165,8 @@ twin principle, §1):
 |---|---|---|---|
 | `/perception/detections` | `interfaces/DetectedObjectArray` | `perception_node` | `tracking_node` |
 | `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` (planned) |
-| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_assessment` (planned), `visualization_node` (planned) |
-| *(planned)* `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_assessment` | `dynamic_planner`, `visualization_node` |
+| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `visualization_node` (planned) |
+| `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `dynamic_planner` (planned), `visualization_node` (planned) |
 
 Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly, not a custom
 action.
@@ -217,10 +223,24 @@ prediction_node  — synchronous per incoming TrackedObjectArray:
                            with stamp/position/velocity/growing 3x3 covariance)
         │
         ▼
-(planned) risk_assessment — combines each PredictedTrajectoryArray with the
-          robot's own planned/current path to produce an ObstacleRiskArray:
-          time_to_collision, path_intersection_prob, relative_speed,
-          distance_to_robot, and the resulting risk_score/threat_level
+risk_node  — synchronous per incoming PredictedTrajectoryArray, once /wheel/odom
+             has been received at least once:
+    1. cache      /wheel/odom position/velocity, twist rotated body→world frame
+    2. project    robot's own constant-velocity forecast, sampled at each
+                   incoming TrajectoryPoint's own timestamp offset (Phase-1
+                   stand-in for a real planned path — dynamic_planner does not
+                   exist yet)
+    3. score       per track: time_to_collision (first offset within
+                   collision_radius_m, else -1.0), path_intersection_prob
+                   (closed-form Gaussian falloff on closest-approach distance
+                   vs. obstacle covariance + robot_position_std_m), relative_speed
+                   (closing speed along the line of sight), distance_to_robot,
+                   risk_score (weighted linear combination), threat_level
+        │
+        ▼
+/risk/obstacle_risks  (interfaces/ObstacleRiskArray: per-track risk_score,
+                       time_to_collision, path_intersection_prob,
+                       relative_speed, distance_to_robot, threat_level)
         │
         ▼
 (planned) dynamic_planner — ObstacleRiskArray feeds a custom risk-aware costmap
@@ -493,6 +513,92 @@ during implementation: `prediction_node` run standalone and fed a fabricated
 correct `model_name`, point count, and growing covariance end-to-end through
 the actual ROS graph.
 
+## 9b. Module 6 implementation details (`risk_assessment`)
+
+Turns `interfaces/PredictedTrajectoryArray` (Module 5) and the robot's own `/wheel/odom`
+into `interfaces/ObstacleRiskArray` — an explainable, per-obstacle collision-risk score —
+the contract `dynamic_planner` (Module 7) and `visualization_node` consume.
+
+**Node:** `risk_node`, subscribing to `/prediction/trajectories` and `/wheel/odom`,
+publishing `ObstacleRiskArray` on `/risk/obstacle_risks` **synchronously**, once per
+incoming `PredictedTrajectoryArray` (no independent timer, mirroring `tracking_node`/
+`prediction_node`). No risk is published until at least one `/wheel/odom` message has
+been cached.
+
+**Staged design** — mirrors `cognitive_perception`/`cognitive_tracking`/`motion_prediction`'s
+convention:
+
+| Stage | Method | Job |
+|---|---|---|
+| Input (cache) | `_odom_callback` | Caches the robot's current position/velocity, twist rotated from body frame into world frame. The only method touching the odometry subscriber. |
+| Input (drive) | `_trajectories_callback` | Entry point; drives every stage below in order. The only method touching the trajectories subscriber. |
+| Compute | `_compute_risk` | Per-track risk scoring (`risk_assessment.risk_model`) |
+| Assemble | `_build_risk_array` | Pure message-building, no I/O |
+| Output | `_publish` | The only method that touches the publisher |
+
+**Supporting module** (free of ROS/rclpy imports, independently unit-testable):
+
+- `risk_model.py` — `assess_obstacle_risk()`: combines one obstacle's trajectory (as
+  `(offset_sec, position, velocity, position_covariance)` tuples — the same per-step shape
+  `trajectory_predictor.predict_trajectory()` returns) with the robot's own
+  constant-velocity-projected position at each of those same offsets into
+  `time_to_collision`, `path_intersection_prob`, `relative_speed`, `distance_to_robot`,
+  `risk_score`, and `threat_level`.
+
+**Parameters** (all ROS parameters, `config/risk_params.yaml`):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `robot_radius_m` | 0.2 | Summed into `collision_radius_m` for `time_to_collision` |
+| `obstacle_radius_m` | 0.4 | Fixed generic obstacle radius — see limitations below |
+| `robot_position_std_m` | 0.1 | Stand-in for real robot localization uncertainty |
+| `weight_ttc` / `weight_prob` / `weight_speed` / `weight_distance` | 0.35 / 0.35 / 0.15 / 0.15 | `risk_score` component weights |
+| `max_relative_speed_mps` | 3.0 | Closing speed at/above which the speed component saturates |
+| `max_distance_m` | 5.0 | Distance at/beyond which the distance component is zero |
+| `threat_medium_min` / `threat_high_min` / `threat_critical_min` | 0.25 / 0.5 / 0.75 | `risk_score` cut points for `threat_level` |
+
+**Key implementation facts:**
+
+- The robot's own future path is a locally-projected constant-velocity forecast from
+  cached `/wheel/odom`, not a real planned path — `dynamic_planner` (Module 7) does not
+  exist yet. This is a documented Phase-1 stand-in, approved as a design decision before
+  implementation, replaced by Nav2's real plan in Module 7 without `risk_node`'s published
+  contract changing.
+- Every trajectory sample's time offset is read directly from `TrajectoryPoint.stamp`
+  (`point.stamp - header.stamp`), not from a separately configured `horizon_sec`/`step_sec`
+  — `risk_assessment` never needs to know `motion_prediction`'s sampling parameters to stay
+  correct.
+- Obstacle radius (`obstacle_radius_m`) is a single fixed configured constant, the same for
+  every track, because `PredictedTrajectory` carries no size/class_id field. Subscribing to
+  `/tracking/tracks` for real per-track size was considered and rejected, to keep
+  `risk_node`'s input exactly as documented in §5C (`/prediction/trajectories` only).
+- `path_intersection_prob` is a closed-form Gaussian falloff
+  (`exp(-0.5 * (min_distance / combined_std)^2)`) on the closest-approach distance, combining
+  the obstacle's own propagated position covariance with `robot_position_std_m`. Deterministic,
+  no RNG/Monte Carlo, no new dependency (no SciPy `erf` needed, consistent with §17's
+  "defer SciPy" stance).
+- `risk_score` is a weighted **linear** combination of four normalized components (TTC,
+  path-intersection probability, closing speed, distance) — deliberately inspectable rather
+  than a black-box function, per §10's "clean architecture over sophistication."
+- `distance_to_robot` and `relative_speed` are computed against a trajectory's *first*
+  point (one sample interval into the future), not a true `t=0` sample — `PredictedTrajectory`
+  has no `t=0` point. A documented Phase-1 proxy, negligible at `motion_prediction`'s default
+  0.1s step.
+- `/wheel/odom`'s `twist` is rotated from the body frame into the world frame using the
+  odometry message's own orientation quaternion (`rotate_vector_by_quaternion`), since
+  `nav_msgs/Odometry`'s twist convention is body-frame, not the frame its `pose` is in.
+- No build dependency on `motion_prediction` or `cognitive_tracking` — treats
+  `/prediction/trajectories`/`/wheel/odom` as pure runtime topic sources, consistent with
+  §7's interfaces-only dependency rule.
+
+**Testing:** 25 pytest tests across two files (`test_risk_model.py`, 17 tests;
+`test_risk_node.py`, 8 tests), all built on fabricated inputs — no Gazebo, no live ROS
+graph, no `motion_prediction`. Additionally verified live during implementation: `risk_node`
+run standalone and fed a fabricated `Odometry` then `PredictedTrajectoryArray` over
+`ros2 topic pub`/`ros2 topic echo`, confirming correct `distance_to_robot`, `relative_speed`,
+`time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct
+collision-course obstacle end-to-end through the actual ROS graph.
+
 ## 10. Design philosophy
 
 - **Contract-first decoupling.** The `interfaces` package is the only shared
@@ -640,24 +746,34 @@ the actual ROS graph.
 - No automated **multi-node** integration test exists (e.g. `perception_node`
   and `tracking_node` running together under `colcon test`). The two have
   only been verified together manually (see §9's "Testing" note and §12).
+- `risk_node`'s obstacle radius (`obstacle_radius_m`) is a single fixed config
+  value, not each obstacle's real size — `PredictedTrajectory` carries no
+  size/class_id field to derive it from (§9b). `time_to_collision` is
+  therefore only as accurate as that generic default.
+- `risk_node` projects the robot's own future path via constant-velocity
+  extrapolation from `/wheel/odom`, not a real planned/global path — there is
+  no such topic until `dynamic_planner` (Module 7) exists. A robot that turns
+  sharply within the prediction horizon will have this self-projection
+  diverge from its actual path, the same limitation §17 already documents for
+  `motion_prediction`'s obstacle forecasts.
+- `risk_node`'s `path_intersection_prob` combines obstacle covariance with a
+  fixed `robot_position_std_m` config value, not a real robot localization
+  covariance — Phase 1 has no localization uncertainty estimate to read yet.
+- `risk_node` assumes `/wheel/odom`'s pose is expressed in the same frame as
+  `/prediction/trajectories` (`"world"`, per `perception_node`'s
+  `detection_frame_id`) — no TF lookup or transform is performed between them.
+  If Phase 2's real odometry publishes in a different frame, this would need
+  revisiting.
 - This document (`PROJECT_CONTEXT.md`) did not exist prior to Module 4's
   completion, despite being referenced by relative path in
   `cognitive_perception/cognitive_perception/perception_node.py`'s comments.
   This is the first canonical version; any prior informal notes it may have
   superseded are not preserved here.
 
-## 15. Planned Modules 6–8
+## 15. Planned Modules 7–8
 
-Module 5 (`motion_prediction`) is complete — see §9a for its implementation
+Module 6 (`risk_assessment`) is complete — see §9b for its implementation
 details.
-
-**Module 6 — `risk_assessment`.** Consumes `PredictedTrajectoryArray` (and,
-implicitly, the robot's own planned/current path or pose), publishes
-`interfaces/ObstacleRiskArray`. Per `interfaces/README.md`'s explainability
-design note, must compute and expose `time_to_collision`,
-`path_intersection_prob`, `relative_speed`, and `distance_to_robot` as
-first-class fields alongside the final `risk_score`/`threat_level` — not just
-the score.
 
 **Module 7 — `dynamic_planner`.** Nav2 integration: a custom risk-aware
 costmap layer consuming `ObstacleRiskArray`, plus an MPPI controller.
@@ -739,6 +855,41 @@ independently, for display — not part of the control path).
   synchronous-publish decision (Module 4 already publishes at a fixed
   cadence, so a second timer here would add complexity without benefit in
   Phase 1).
+- `risk_node` projects the robot's own future path via local constant-velocity
+  extrapolation from `/wheel/odom`, rather than consuming a real planned-path
+  topic, because `dynamic_planner` (Module 7) does not exist yet. Approved as
+  a Phase-1 design decision before implementation (see §9b); replaced by
+  Nav2's real plan in Module 7 without `risk_node`'s published contract
+  changing.
+- `risk_node`'s obstacle radius is a single fixed configured constant
+  (`obstacle_radius_m`), the same for every track, rather than either adding
+  a size field to `PredictedTrajectory` or subscribing to `/tracking/tracks`
+  directly for real per-track size — both alternatives were considered and
+  rejected to keep `risk_node`'s only meaningful input exactly as documented
+  in §5C (`/prediction/trajectories` only), with no interface change and no
+  dependency on a non-adjacent stage's topic.
+- `risk_node`'s `path_intersection_prob` uses a closed-form Gaussian falloff
+  on covariance (`exp(-0.5 * (min_distance / combined_std)^2)`) rather than a
+  simple geometric distance threshold, specifically to make use of the
+  per-point position covariance `PredictedTrajectory` already exposes and
+  that §17 says `risk_assessment` should treat as the mechanism for
+  interpreting forecast uncertainty. Deterministic and closed-form, not
+  sampled, to avoid introducing RNG/Monte Carlo or a new dependency (SciPy).
+- `risk_node`'s `risk_score` is a weighted **linear** combination of four
+  normalized components (TTC, path-intersection probability, closing speed,
+  distance), not a nonlinear/black-box function, consistent with §10's
+  "clean architecture over algorithmic sophistication" and
+  `interfaces/README.md`'s explainability design note.
+- Every trajectory sample's time offset in `risk_node` is derived directly
+  from each `TrajectoryPoint.stamp` rather than a separately configured
+  `horizon_sec`/`step_sec` parameter — avoids `risk_assessment` needing to
+  know or duplicate `motion_prediction`'s sampling parameters to stay
+  correct, an even looser coupling than the deliberate-duplication
+  convention used elsewhere (§13).
+- `risk_node` publishes synchronously per incoming `PredictedTrajectoryArray`,
+  with no independent timer, mirroring `tracking_node`/`prediction_node`'s
+  synchronous-publish decision, and additionally withholds publishing
+  entirely until at least one `/wheel/odom` message has been received.
 
 ## 17. Assumptions and rationale behind each design choice
 
@@ -787,9 +938,31 @@ independently, for display — not part of the control path).
 - **Assumes obstacle motion is well-approximated by a constant-velocity model
   over `motion_prediction`'s 3-second default horizon.** A real obstacle that
   turns, accelerates, or decelerates within that window will have its forecast
-  trajectory diverge from its actual path; `risk_assessment` (Module 6) should
-  treat `PredictedTrajectory`'s per-point covariance (which grows with
-  horizon) as the mechanism for expressing this growing uncertainty, not treat
-  the forecast position as exact. Revisit if Module 6 needs tighter forecasts
-  for fast-turning obstacles — the `model_name` field exists precisely so a
-  learned model can replace this assumption later without an interface change.
+  trajectory diverge from its actual path; `risk_assessment` (Module 6) treats
+  `PredictedTrajectory`'s per-point covariance (which grows with horizon) as
+  the mechanism for expressing this growing uncertainty via
+  `path_intersection_prob`, not the forecast position as exact. Revisit if
+  Module 6 needs tighter forecasts for fast-turning obstacles — the
+  `model_name` field exists precisely so a learned model can replace this
+  assumption later without an interface change.
+- **Assumes the robot's own motion is also well-approximated by a
+  constant-velocity model over the same horizon**, since `risk_node` has no
+  real planned path to consume yet (`dynamic_planner`/Module 7 does not
+  exist). A robot executing a sharp turn mid-horizon will have `risk_node`'s
+  self-projection diverge from its actual path, understating or overstating
+  risk for that window. Revisit once Module 7 publishes a real plan
+  `risk_node` can consume instead (§9b, §16).
+- **Assumes every obstacle can be approximated by the same fixed
+  `obstacle_radius_m`, regardless of its real size or class.**
+  `PredictedTrajectory` carries no size/class_id field to do better with in
+  Phase 1 (§9b). A real Phase-2 detector/tracker backend that publishes
+  meaningfully different obstacle sizes should prompt revisiting whether
+  `interfaces/msg/PredictedTrajectory.msg` needs a size field, rather than
+  `risk_assessment` continuing to guess with one constant.
+- **Assumes `/wheel/odom`'s pose is published in the same frame as
+  `/prediction/trajectories`** (`"world"`) **and that `robot_position_std_m`
+  is an adequate stand-in for real localization uncertainty.** Phase 1 has no
+  localization stack publishing a real pose covariance; Phase 2 deployment
+  onto the physical BeetleBot should confirm both the frame assumption and
+  replace the fixed `robot_position_std_m` with a real covariance once one
+  exists.
