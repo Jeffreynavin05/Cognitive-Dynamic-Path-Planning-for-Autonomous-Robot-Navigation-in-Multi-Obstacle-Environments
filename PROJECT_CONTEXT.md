@@ -23,12 +23,13 @@ section here in the same change.
 9. [Module 4 implementation details (cognitive_tracking)](#9-module-4-implementation-details-cognitive_tracking)
 9a. [Module 5 implementation details (motion_prediction)](#9a-module-5-implementation-details-motion_prediction)
 9b. [Module 6 implementation details (risk_assessment)](#9b-module-6-implementation-details-risk_assessment)
+9c. [Module 7 implementation details (dynamic_planner)](#9c-module-7-implementation-details-dynamic_planner)
 10. [Design philosophy](#10-design-philosophy)
 11. [Coding conventions](#11-coding-conventions)
 12. [Testing conventions](#12-testing-conventions)
 13. [Configuration conventions](#13-configuration-conventions)
 14. [Known limitations](#14-known-limitations)
-15. [Planned Modules 7–8](#15-planned-modules-7-8)
+15. [Planned Module 8](#15-planned-module-8)
 16. [Important architectural decisions made during implementation](#16-important-architectural-decisions-made-during-implementation)
 17. [Assumptions and rationale behind each design choice](#17-assumptions-and-rationale-behind-each-design-choice)
 
@@ -76,7 +77,7 @@ current implementation status):
 ```
 camera_node ─┐
 lidar_node ──┴─→ perception_node → tracking_node → prediction_node → risk_node → planner_node → controller_node
-              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, done) (Module 7, planned) (Module 8, planned)
+              (Module 3, done)   (Module 4, done)  (Module 5, done)  (Module 6, done) (Module 7, done) (Module 8, planned)
                                           │               │              │            │
                                           └───────────────┴──────────────┴────────────┴──→ visualization_node (planned)
 ```
@@ -104,7 +105,7 @@ package's source, `build/`, `install/`, and `log/` are generated artifacts
 | `cognitive_tracking` | ament_python | done (Module 4) | `tracking_node` — Kalman-filter multi-object tracking with persistent IDs, publishing `TrackedObjectArray` |
 | `motion_prediction` | ament_python | done (Module 5) | `prediction_node` — constant-velocity trajectory forecasting per `CONFIRMED`/`OCCLUDED` tracked object, publishing `PredictedTrajectoryArray` |
 | `risk_assessment` | ament_python | done (Module 6) | `risk_node` — per-obstacle collision risk scoring (TTC, path intersection, relative speed, distance) against the robot's own odometry-projected path, publishing `ObstacleRiskArray` |
-| `dynamic_planner` | ament_python (planned) | planned (Module 7) | Nav2 integration, custom risk-aware costmap layer, MPPI controller |
+| `dynamic_planner` | ament_python | done (Module 7) | `planner_node` — self-hosted `NavigateToPose` action server; deterministic, risk-aware local planner (no real Nav2 bringup/costmap plugin), publishing velocity commands on `/cmd_vel_nav` |
 | `robot_controller` | ament_python (planned) | planned (Module 8) | Bridges planner output to `/cmd_vel_nav`, respects the real robot's `/cmd_vel_gate` arbitration |
 | `cognitive_bringup` | ament_python (planned) | planned (integration, unnumbered) | Top-level launch files, RViz configs, world files, `visualization_node` |
 
@@ -124,7 +125,7 @@ else it consumes from an upstream stage is a runtime-only topic subscription.
 | `cognitive_tracking` | done | `test_kalman_filter.py` (5), `test_association.py` (6), `test_track.py` (9), `test_tracking_node.py` (7) — 27 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 36 tests workspace-wide, 0 failures); additionally smoke-tested live — `tracking_node` run standalone, fed fabricated `DetectedObjectArray` messages via `ros2 topic pub`, `/tracking/tracks` echoed and confirmed correct `track_id` stability, `STATUS_TENTATIVE → STATUS_CONFIRMED` transition at hit 3, growing `age`, and shrinking/coupling covariance across predict/update cycles |
 | `motion_prediction` | done (Module 5) | `test_trajectory_predictor.py` (6), `test_prediction_node.py` (9) — 15 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 15 tests, 0 failures); additionally smoke-tested live — `prediction_node` run standalone, fed a fabricated `TrackedObjectArray` via `ros2 topic pub`, `/prediction/trajectories` echoed and confirmed `model_name: constant_velocity`, 30 `TrajectoryPoint`s at the default 3.0s/0.1s horizon/step, and growing position covariance across the array |
 | `risk_assessment` | done (Module 6) | `test_risk_model.py` (17), `test_risk_node.py` (8) — 25 tests total | Built with `colcon build`; unit suite green (`colcon test-result`: 76 tests workspace-wide, 0 failures); additionally smoke-tested live — `risk_node` run standalone, fed a fabricated `Odometry` and `PredictedTrajectoryArray` via `ros2 topic pub`, `/risk/obstacle_risks` echoed and confirmed correct `distance_to_robot`, `relative_speed`, `time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct collision-course obstacle |
-| `dynamic_planner` | planned (Module 7) | — | Not started |
+| `dynamic_planner` | done (Module 7) | `test_global_path.py` (5), `test_local_planner.py` (18), `test_planner_node.py` (13) — 36 tests total | Built with `colcon build` (all 7 workspace packages); unit suite green (`colcon test-result`: 117 tests workspace-wide, 0 failures beyond the pre-existing `interfaces` xmllint issue predating this module); additionally smoke-tested live in three scenarios — `planner_node` run standalone, fed a fabricated `Odometry` via `ros2 topic pub` and a goal via `ros2 action send_goal`: (1) far, obstacle-free goal — `/planner/global_path` published once (correct start/end waypoints) and `/cmd_vel_nav` published the expected dynamic-window-limited forward command (`linear.x=0.05`, matching hand-derived expectations) at 10 Hz; (2) a `THREAT_CRITICAL` risk with `time_to_collision=0.1` forced `/cmd_vel_nav` to all-zero throughout, despite a far, otherwise-clear goal; (3) a goal already within `goal_tolerance_m` made the action report `SUCCEEDED` immediately |
 | `robot_controller` | planned (Module 8) | — | Not started |
 | `cognitive_bringup` | planned | — | Not started |
 
@@ -165,11 +166,17 @@ pipeline-contract topic, since there is no real planned-path topic to consume un
 |---|---|---|---|
 | `/perception/detections` | `interfaces/DetectedObjectArray` | `perception_node` | `tracking_node` |
 | `/tracking/tracks` | `interfaces/TrackedObjectArray` | `tracking_node` | `motion_prediction`, `visualization_node` (planned) |
-| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `visualization_node` (planned) |
-| `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `dynamic_planner` (planned), `visualization_node` (planned) |
+| `/prediction/trajectories` | `interfaces/PredictedTrajectoryArray` | `prediction_node` | `risk_node`, `planner_node`, `visualization_node` (planned) |
+| `/risk/obstacle_risks` | `interfaces/ObstacleRiskArray` | `risk_node` | `planner_node`, `visualization_node` (planned) |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | `planner_node` | `robot_controller` (planned) |
+| *(proposed, additive, not an `interfaces` message)* `/planner/global_path` | `nav_msgs/Path` | `planner_node` | `visualization_node` (planned) |
 
 Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly, not a custom
-action.
+action — `planner_node` hosts this action server itself (`navigate_to_pose`),
+consistent with Module 7's approved "no real Nav2 bringup" design decision
+(§9c, §16). `planner_node` also subscribes to `/prediction/trajectories`
+directly (not just `/risk/obstacle_risks`) for obstacle geometry — see §9c's
+"clean division of labour" decision.
 
 ### D. Placeholder topics (wired, not yet functionally used)
 
@@ -177,12 +184,18 @@ action.
 `/scan`, but both only log a rate heartbeat in Phase 1 — neither publishes
 `DetectedObjectArray`, and `perception_node` does not consume their output.
 
-### E. Real-robot-only topics (Phase 2 target, not present in sim)
+### E. `/cmd_vel_nav` — bridging topic pending Module 8
 
-`/cmd_vel_nav` — the real output topic `dynamic_planner`/Nav2 will publish to
-(Module 7/8). On hardware this passes through the BeetleBot's existing
-`/cmd_vel_gate` arbitration node; that node does not exist in simulation, where
-`/cmd_vel` is used directly instead.
+`/cmd_vel_nav` is now published by `planner_node` (§9c) — it is `dynamic_planner`'s
+fixed output contract in every phase, per §11's "fixed pipeline-contract topic names
+are module-level constants" rule, not a Phase-2-only topic. On real hardware it will
+pass through the BeetleBot's existing `/cmd_vel_gate` arbitration node; that node
+does not exist in simulation, where `robot_controller` (Module 8, not yet built) is
+meant to relay `/cmd_vel_nav` onto `/cmd_vel` directly instead. Until Module 8 exists,
+`/cmd_vel_nav` has no subscriber in either environment and Gazebo will not move in
+response to it — the same bootstrapping gap Module 6 had with `dynamic_planner` before
+Module 7 existed (§9b's "Testing" note), resolved the same way: verify via
+`ros2 topic echo /cmd_vel_nav` rather than watching the robot drive.
 
 ## 6. Message flow
 
@@ -243,13 +256,26 @@ risk_node  — synchronous per incoming PredictedTrajectoryArray, once /wheel/od
                        relative_speed, distance_to_robot, threat_level)
         │
         ▼
-(planned) dynamic_planner — ObstacleRiskArray feeds a custom risk-aware costmap
-          layer into Nav2 + an MPPI controller; goal-sending via
-          nav2_msgs/action/NavigateToPose
+planner_node  — self-hosted nav2_msgs/action/NavigateToPose action server (no
+              real Nav2 bringup); timer-driven control loop at control_rate_hz
+              once a goal is active:
+    1. join       cached PredictedTrajectoryArray (geometry) with cached
+                   ObstacleRiskArray (explainable priority), by track_id
+    2. gate        emergency stop if any THREAT_CRITICAL track's TTC is within
+                   emergency_stop_ttc_sec, overriding candidate scoring
+    3. plan        deterministic weighted-scoring local planner
+                   (dynamic_planner.local_planner): fixed (v, omega) candidate
+                   grid within this cycle's accel-limited dynamic window,
+                   each forward-simulated and scored (goal progress, heading,
+                   obstacle clearance) if admissible; least-bad max-clearance
+                   fallback if boxed in
         │
         ▼
-(planned) robot_controller — relays planner output to /cmd_vel_nav (hardware) /
-          /cmd_vel (sim)
+/cmd_vel_nav  (geometry_msgs/Twist, fixed pipeline-contract topic, §5E)
+        │
+        ▼
+(planned) robot_controller — relays /cmd_vel_nav to /cmd_vel_gate arbitration
+          (hardware) / directly onto /cmd_vel (sim)
 
 (planned) visualization_node subscribes to TrackedObjectArray,
           PredictedTrajectoryArray, and ObstacleRiskArray independently, for
@@ -599,6 +625,133 @@ run standalone and fed a fabricated `Odometry` then `PredictedTrajectoryArray` o
 `time_to_collision`, `path_intersection_prob`, `risk_score`, and `threat_level` for a direct
 collision-course obstacle end-to-end through the actual ROS graph.
 
+## 9c. Module 7 implementation details (`dynamic_planner`)
+
+Hosts a `nav2_msgs/action/NavigateToPose` action server and turns `interfaces/ObstacleRiskArray`,
+`interfaces/PredictedTrajectoryArray`, and the robot's own `/wheel/odom` into velocity
+commands on `/cmd_vel_nav` — the fixed contract `robot_controller` (Module 8) consumes.
+
+**Node:** `planner_node`. Subscribes to `/risk/obstacle_risks`, `/prediction/trajectories`,
+`/wheel/odom` (all cache-only). Hosts the `navigate_to_pose` action server. Runs a
+**timer-driven control loop** (`control_rate_hz`, default 10 Hz) that publishes `/cmd_vel_nav`
+once per cycle whenever a goal is active — the first deliberate deviation in this workspace
+from every prior node's synchronous-per-message convention (§16), because a velocity-command
+publisher cannot go silent between upstream messages the way a pass-through stage can.
+Publishes `nav_msgs/Path` on `/planner/global_path` once per accepted goal, for
+explainability/RViz only (not part of the control path).
+
+**Staged design** — mirrors every prior module's convention, extended for the action-server +
+timer shape:
+
+| Stage | Method | Job |
+|---|---|---|
+| Input (cache) | `_odom_callback` | Robot position/yaw/body-frame velocity |
+| Input (cache) | `_risks_callback` | Latest `ObstacleRiskArray`, by `track_id` |
+| Input (cache) | `_trajectories_callback` | Latest `PredictedTrajectoryArray`, by `track_id` |
+| Input (goal) | `_goal_callback`/`_cancel_callback`/`_execute_callback` | Standard `NavigateToPose` action-server handlers |
+| Control (drive) | `_control_loop` | Timer callback; entry point for every stage below, once per cycle while a goal is active |
+| Join | `_join_obstacles` | Combines cached trajectories (geometry) with cached risks (priority), by `track_id` |
+| Plan | `_compute_command` | `dynamic_planner.local_planner.select_command()` |
+| Assemble | `_build_cmd_vel`/`_build_global_path` | Pure message-building, no I/O |
+| Output | `_publish_cmd`/`_publish_global_path` | The only methods that touch their respective publishers |
+
+**Supporting modules** (each free of ROS/rclpy imports, independently unit-testable):
+
+- `local_planner.py` — `select_command()`: a small, fixed, deterministically-ordered grid of
+  `(v, omega)` candidates within the current cycle's accel-limited dynamic window, each
+  forward-simulated with simple unicycle kinematics (`simulate_unicycle`) over
+  `local_horizon_sec`. Candidates clear of every obstacle by more than `collision_radius_m`
+  across the whole horizon are "admissible" and scored (`score_candidate`) by a weighted
+  linear combination of goal progress, heading alignment, and clearance; the max-clearance
+  candidate is returned instead (flagged `admissible=False`) if none are admissible (boxed in).
+  No random sampling anywhere — the same inputs always produce the same command.
+- `global_path.py` — `generate_straight_line_path()`: evenly-spaced waypoints from the robot's
+  current position to the goal, for `/planner/global_path` only. `local_planner.py` scores
+  directly against the goal position, not path waypoints — a straight line's heading is
+  identical everywhere along it, so an explicit lookahead mechanism would add no behavior.
+
+**Parameters** (all ROS parameters, `config/planner_params.yaml`):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `control_rate_hz` | 10.0 | Fixed-rate control loop frequency |
+| `max_linear_speed_mps` / `max_angular_speed_radps` | 0.5 / 1.5 | Kinematic limits |
+| `max_linear_accel_mps2` / `max_angular_accel_radps2` | 0.5 / 2.0 | Define each cycle's dynamic window |
+| `num_linear_samples` / `num_angular_samples` | 5 / 7 | Candidate `(v, omega)` grid density |
+| `local_horizon_sec` / `local_step_sec` | 1.5 / 0.1 | Per-candidate forward-simulation horizon/spacing |
+| `robot_radius_m` / `obstacle_radius_m` | 0.2 / 0.4 | Summed into `collision_radius_m`; independently declared from `risk_assessment`'s parameters of the same name |
+| `safety_margin_m` | 1.0 | Distance beyond `collision_radius_m` at which the clearance component saturates |
+| `weight_progress` / `weight_heading` / `weight_clearance` | 0.5 / 0.2 / 0.3 | `local_planner` score component weights |
+| `goal_tolerance_m` | 0.15 | Distance to goal at/below which `NavigateToPose` succeeds |
+| `emergency_stop_ttc_sec` | 0.5 | `THREAT_CRITICAL` + TTC at/below this forces an immediate stop |
+| `waypoint_spacing_m` | 0.5 | Spacing for the visualization-only global path |
+
+**Key implementation facts:**
+
+- **No real Nav2 bringup.** `planner_node` hosts the `NavigateToPose` action server itself —
+  no `bt_navigator`, no lifecycle-managed costmap/planner/controller servers, no C++
+  `nav2_costmap_2d` plugin. Approved design decision: a real Nav2 costmap layer is a C++
+  pluginlib plugin, which would have been this workspace's first C++/`ament_cmake`
+  node-bearing package (every other node-bearing package is `ament_python`, §2/§11) purely to
+  satisfy a Phase-1 reference implementation. `/cmd_vel_nav` and the `NavigateToPose` action
+  are the fixed published interfaces a real Nav2 stack can replace this package's internals
+  behind later, without either changing.
+- **Deterministic weighted-scoring, not MPPI.** §15's original wording sketched an "MPPI
+  controller" before any planning module existed. MPPI is inherently stochastic
+  (randomly-sampled control rollouts), in direct tension with "deterministic behavior" being
+  an explicit Module 7 priority — approved decision to use the deterministic scorer described
+  above instead, matching `risk_assessment.risk_model`'s own explainable-linear-combination
+  philosophy.
+- **Obstacle geometry from `/prediction/trajectories`, risk from `/risk/obstacle_risks` — a
+  deliberate division of labour, not redundancy.** `ObstacleRisk.msg` carries no position field
+  (its own header comment: "not a raw sensor measurement"), so `local_planner.py` cannot do
+  per-candidate geometric clearance checking from it alone. `planner_node._join_obstacles`
+  combines both by `track_id`; `local_planner.py` itself only ever sees geometry
+  (`ObstacleView`) — `threat_level`/`time_to_collision` are used exclusively as a coarser
+  **emergency-stop safety gate** (`_emergency_stop_triggered`), never folded into per-candidate
+  scoring. Approved decision, precedented by `visualization_node`'s own documented independent
+  multi-topic subscription pattern (§6/§15) — no `interfaces` message was changed.
+- **Straight-line global path, no map/SLAM.** Phase 1 has no map or localization stack
+  anywhere in this pipeline, only odometry — a real Nav2-style global planner isn't
+  meaningfully available. `global_path.py` is a documented Phase-1 stand-in, same spirit as
+  `risk_node`'s odometry self-projection (§9b).
+- **`MultiThreadedExecutor`, not `rclpy.spin()`.** A direct consequence of the timer-driven
+  control loop: the action server's long-running `_execute_callback` (blocks in a poll loop
+  until the goal succeeds/cancels) and the fixed-rate `_control_loop` timer must run
+  concurrently, which a single-threaded executor cannot do without deadlocking. `main()` uses
+  `MultiThreadedExecutor` with the action server and the timer/subscriptions on separate
+  `MutuallyExclusiveCallbackGroup`s — the first deviation in this workspace from §11's
+  `rclpy.init → rclpy.spin → destroy_node/shutdown` pattern; see the amended note in §11.
+- **One active goal at a time.** `_goal_callback` rejects a new goal while one is already
+  executing rather than preempting it — the simplest correct Phase-1 behavior; a real Nav2
+  stack's preemption semantics can replace this later.
+- **`nav2_msgs` is this workspace's first non-`ament_python`-authored ROS message dependency
+  from outside this project** (previously only stock `geometry_msgs`/`nav_msgs`/`std_msgs`
+  etc. were used, all standard ROS2 core packages). It was not installed in the development
+  environment and required a manual `sudo apt install ros-jazzy-nav2-msgs` — see §17.
+- **No build dependency on `risk_assessment` or `motion_prediction`.** Treats
+  `/risk/obstacle_risks`/`/prediction/trajectories`/`/wheel/odom` as pure runtime topic
+  sources, consistent with §7's interfaces-only dependency rule.
+
+**Testing:** 36 pytest tests across three files (`test_global_path.py`, 5 tests;
+`test_local_planner.py`, 18 tests; `test_planner_node.py`, 13 tests), all built on fabricated
+inputs — no Gazebo, no live ROS graph, no `risk_assessment`/`motion_prediction`. `ros-jazzy-nav2-msgs`
+was installed after implementation (§17); `colcon build`/`colcon test` then ran clean workspace-wide
+(117 tests, 0 new failures). Additionally verified live during implementation, across three
+scenarios — `planner_node` run standalone, fed a fabricated `Odometry` over `ros2 topic pub` and a
+goal via `ros2 action send_goal`:
+
+1. **Far, obstacle-free goal** — `/planner/global_path` published exactly once with the expected
+   start/end waypoints; `/cmd_vel_nav` published the expected dynamic-window-limited forward
+   command (`linear.x=0.05`, matching hand-derived expectations for a from-rest first cycle) at
+   `control_rate_hz`.
+2. **Emergency-stop gate** — a `THREAT_CRITICAL` risk with `time_to_collision=0.1` on
+   `/risk/obstacle_risks` forced `/cmd_vel_nav` to all-zero for the entire observation window,
+   despite a far, otherwise-clear goal and no obstacle geometry on `/prediction/trajectories` at
+   all — confirms the gate acts independently of `local_planner.py`'s candidate scoring.
+3. **Goal already within `goal_tolerance_m`** — the action reported `SUCCEEDED` immediately, with
+   `error_code: 0`.
+
 ## 10. Design philosophy
 
 - **Contract-first decoupling.** The `interfaces` package is the only shared
@@ -635,7 +788,11 @@ collision-course obstacle end-to-end through the actual ROS graph.
 - One node class per file, named `<Thing>Node`, at
   `<package_name>/<package_name>/<node_name>.py`, with a plain `main(args=None)`
   entry point (`rclpy.init` → `rclpy.spin` → `destroy_node`/`shutdown` in a
-  `try`/`finally`).
+  `try`/`finally`). **Exception:** `dynamic_planner`'s `planner_node` uses
+  `rclpy.executors.MultiThreadedExecutor` instead of plain `rclpy.spin()`,
+  because its action server's long-running execute callback and its
+  fixed-rate control-loop timer must run concurrently (§9c, §16) — the only
+  node in this workspace with that requirement so far.
 - Node logic is factored into staged, private (`_leading_underscore`) methods
   with one clear entry point — usually a subscription callback or a timer —
   that orchestrates them in a fixed order (§10). Pure "assemble" methods that
@@ -764,21 +921,41 @@ collision-course obstacle end-to-end through the actual ROS graph.
   `detection_frame_id`) — no TF lookup or transform is performed between them.
   If Phase 2's real odometry publishes in a different frame, this would need
   revisiting.
+- `planner_node`'s `_join_obstacles` silently skips any track present in
+  `/prediction/trajectories` but not yet in the cached `/risk/obstacle_risks`
+  (or vice versa) that cycle, rather than planning around it blind — a
+  documented Phase-1 simplification, negligible given both topics are
+  published from the same upstream cadence (§9c).
+- `planner_node`'s obstacle-forecast time offsets are computed against each
+  received `PredictedTrajectoryArray`'s own `header.stamp`, but the control
+  loop runs on an independent timer decoupled from message arrival — unlike
+  `risk_node`, which only ever compares trajectories at the moment they
+  arrive. This introduces a small, bounded clock skew between "now" in the
+  candidate simulation and "now" in the cached obstacle forecast, up to one
+  upstream publish period. Not corrected for in Phase 1.
+- `dynamic_planner` has no awareness of the arena's outer walls or any other
+  untracked static geometry — `perception_node` only classifies
+  `static_obstacle_*`/`dynamic_obstacle_*` entities (§8), never the arena
+  boundary itself, and no map/occupancy-grid topic exists anywhere in this
+  pipeline. A goal placed such that the straight-line path or a locally
+  "clear" candidate would exit the arena is not guarded against. Pre-existing
+  pipeline-wide gap, not introduced by Module 7, but only became reachable
+  once a planner existed to act on it.
+- `planner_node` accepts only one active `NavigateToPose` goal at a time,
+  rejecting a new goal rather than preempting the current one — a real Nav2
+  stack's preemption semantics are not replicated in Phase 1.
+- Until `robot_controller` (Module 8) exists, `/cmd_vel_nav` has no
+  subscriber and Gazebo will not move in response to it — see §5E.
 - This document (`PROJECT_CONTEXT.md`) did not exist prior to Module 4's
   completion, despite being referenced by relative path in
   `cognitive_perception/cognitive_perception/perception_node.py`'s comments.
   This is the first canonical version; any prior informal notes it may have
   superseded are not preserved here.
 
-## 15. Planned Modules 7–8
+## 15. Planned Module 8
 
-Module 6 (`risk_assessment`) is complete — see §9b for its implementation
+Module 7 (`dynamic_planner`) is complete — see §9c for its implementation
 details.
-
-**Module 7 — `dynamic_planner`.** Nav2 integration: a custom risk-aware
-costmap layer consuming `ObstacleRiskArray`, plus an MPPI controller.
-Goal-sending reuses `nav2_msgs/action/NavigateToPose` directly — no custom
-action.
 
 **Module 8 — `robot_controller`.** Bridges the planner's output to
 `/cmd_vel_nav` (not `/cmd_vel`), so it passes through the real robot's
@@ -890,6 +1067,50 @@ independently, for display — not part of the control path).
   with no independent timer, mirroring `tracking_node`/`prediction_node`'s
   synchronous-publish decision, and additionally withholds publishing
   entirely until at least one `/wheel/odom` message has been received.
+- `dynamic_planner`'s `planner_node` hosts the `NavigateToPose` action server
+  itself rather than relying on a real Nav2 bringup (`bt_navigator`,
+  lifecycle-managed servers, a C++ `nav2_costmap_2d` plugin) — approved
+  Phase-1 design decision, avoiding this workspace's first C++/`ament_cmake`
+  node-bearing package and a heavy bringup dependency (§9c).
+- `local_planner.py` uses a deterministic weighted-scoring candidate scorer
+  (fixed grid, no random sampling) rather than a true stochastic MPPI
+  controller, even though §15 originally sketched "an MPPI controller" before
+  any planning module existed — approved because MPPI's randomness is in
+  direct tension with "deterministic behavior" being an explicit Module 7
+  priority (§9c).
+- `planner_node` reads obstacle geometry from `/prediction/trajectories`
+  directly, joined by `track_id` with `/risk/obstacle_risks`, rather than
+  adding a position field to `ObstacleRisk.msg` — keeps the frozen
+  `interfaces` contract unchanged (no message has been modified since Module
+  1) and keeps `ObstacleRisk.msg` true to its own header comment ("not a raw
+  sensor measurement"). Precedented by `visualization_node`'s already-documented
+  independent multi-topic subscription pattern (§6/§15/§9c).
+- `ObstacleRiskArray`'s `threat_level`/`time_to_collision` are used by
+  `planner_node` only as a coarse emergency-stop safety gate, never folded
+  into `local_planner.py`'s per-candidate scoring — a deliberate division of
+  labour between the risk-assessment stage (explainable priority) and the
+  planning stage (geometric clearance), approved alongside the previous
+  decision (§9c).
+- `dynamic_planner`'s global path (`global_path.py`) is a straight line from
+  the robot's current position to the goal, not a real Nav2-style
+  map-searching global planner — there is no map/SLAM/localization stack
+  anywhere in this pipeline in Phase 1, only odometry, so a real global
+  planner isn't meaningfully available yet (§9c).
+- `planner_node`'s control loop runs on its own fixed-rate timer
+  (`control_rate_hz`) rather than publishing synchronously per incoming
+  message, breaking the synchronous-publish convention every prior node
+  (Modules 4-6) deliberately followed — approved because a velocity-command
+  publisher cannot go silent between upstream messages the way a
+  pass-through stage safely can (§9c).
+- `planner_node`'s `main()` uses `rclpy.executors.MultiThreadedExecutor`
+  instead of the `rclpy.spin()` pattern every other node in this workspace
+  uses — a direct, necessary consequence of the previous decision: the
+  action server's execute callback and the control-loop timer must run
+  concurrently. Amended into §11's coding conventions as the first
+  documented exception to that pattern.
+- `planner_node` accepts only one active `NavigateToPose` goal at a time
+  (rejects a new goal rather than preempting), the simplest correct Phase-1
+  behavior, deferring real preemption semantics to a future Nav2 stack.
 
 ## 17. Assumptions and rationale behind each design choice
 
@@ -966,3 +1187,33 @@ independently, for display — not part of the control path).
   onto the physical BeetleBot should confirm both the frame assumption and
   replace the fixed `robot_position_std_m` with a real covariance once one
   exists.
+- **Assumes `ros-jazzy-nav2-msgs` (and, in Phase 2, the rest of the Nav2
+  message/action packages a real Nav2 stack would need) is installed on every
+  target platform**, including the Raspberry Pi 5 BeetleBot, not just the
+  Gazebo development machine. It was not present in this workspace's
+  development environment when `dynamic_planner` was first implemented, and
+  had to be added manually (`sudo apt install ros-jazzy-nav2-msgs`) — the
+  first ROS message package this workspace depends on that isn't a standard
+  core package already present in a base ROS2 install. Confirmed installed
+  and working (§9c's "Testing" note) as of the live verification pass; Phase
+  2 deployment should still confirm it is present on the Pi's image before
+  relying on `dynamic_planner` there.
+- **Assumes the robot's forward/angular speed reported on `/wheel/odom`'s
+  `twist.twist.linear.x`/`twist.twist.angular.z` are body-frame values usable
+  directly as `local_planner.py`'s unicycle-model `(v, omega)`**, consistent
+  with `nav_msgs/Odometry`'s documented convention. If Phase 2's real
+  odometry source reports these fields differently, `planner_node._odom_callback`
+  is the one place that would need to change (§9c).
+- **Assumes a straight line to the goal is an acceptable stand-in for a real
+  global plan given this pipeline has no map/SLAM/localization stack.** A
+  goal on the far side of a wall or a large obstacle cluster has no route
+  around it in Phase 1 — `local_planner.py`'s local deviation can dodge
+  individual tracked obstacles but cannot discover a detour around static
+  geometry the straight line passes through. Revisit once a real map-aware
+  global planner exists (§9c, §14).
+- **Assumes obstacle-forecast time offsets and the control loop's own "now"
+  stay closely enough synchronized that the bounded clock skew between them
+  (§14) doesn't matter at `control_rate_hz`'s default 10 Hz.** Would need
+  revisiting if either the control rate drops much lower or upstream
+  publishing becomes bursty, the same category of assumption §17 already
+  makes about `perception_node`'s publish rate for Module 4.

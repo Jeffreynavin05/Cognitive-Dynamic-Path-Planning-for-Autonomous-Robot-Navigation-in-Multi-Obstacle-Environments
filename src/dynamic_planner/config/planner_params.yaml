@@ -1,0 +1,54 @@
+planner_node:
+  ros__parameters:
+    # Fixed-rate control loop -- a velocity-command publisher can't go
+    # silent between upstream messages the way a pass-through stage can
+    # (see PROJECT_CONTEXT.md section 16's control-loop timing decision).
+    control_rate_hz: 10.0
+
+    # BeetleBot kinematic limits (approximate, tune against the real
+    # 4WD differential-style drivetrain in Phase 2).
+    max_linear_speed_mps: 0.5
+    max_angular_speed_radps: 1.5
+    max_linear_accel_mps2: 0.5
+    max_angular_accel_radps2: 2.0
+
+    # Candidate (v, omega) grid density -- fixed and deterministic, not
+    # randomly sampled (see local_planner.py's module docstring).
+    num_linear_samples: 5
+    num_angular_samples: 7
+
+    # How far ahead each candidate is forward-simulated, and at what
+    # spacing -- shorter than motion_prediction's 3.0s obstacle horizon
+    # since this is re-evaluated every control cycle, not a one-shot forecast.
+    local_horizon_sec: 1.5
+    local_step_sec: 0.1
+
+    # Summed into collision_radius_m for admissibility filtering. Declared
+    # independently of risk_assessment's robot_radius_m/obstacle_radius_m of
+    # the same name -- consistent with this workspace's deliberate-duplication
+    # convention (PROJECT_CONTEXT.md section 13).
+    robot_radius_m: 0.2
+    obstacle_radius_m: 0.4
+
+    # Distance beyond collision_radius_m at which the clearance score
+    # component saturates to its maximum (1.0).
+    safety_margin_m: 1.0
+
+    # total_score = weight_progress*progress + weight_heading*heading
+    #             + weight_clearance*clearance, each component in [0, 1].
+    # Intended to sum to 1.0.
+    weight_progress: 0.5
+    weight_heading: 0.2
+    weight_clearance: 0.3
+
+    # Distance to goal at/below which NavigateToPose succeeds and the robot stops.
+    goal_tolerance_m: 0.15
+
+    # Coarse safety gate: if any ObstacleRiskArray entry reports
+    # THREAT_CRITICAL with time_to_collision at or below this, command an
+    # immediate stop regardless of local_planner's candidate scoring.
+    emergency_stop_ttc_sec: 0.5
+
+    # Waypoint spacing for the visualization-only straight-line global path
+    # published on /planner/global_path.
+    waypoint_spacing_m: 0.5
